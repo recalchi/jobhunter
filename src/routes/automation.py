@@ -1,12 +1,290 @@
 import json
-import os
+import time
+import threading
+import uuid
 from flask import Blueprint, request, jsonify, current_app
-from src.models.user import db
+from src.automation.linkedin_full_flow import LinkedInFullFlow
+from src.models.jobs import Job, db
 from src.models.credentials import Credentials
-from src.models.jobs import Job
-from src.automation.linkedin_automation import LinkedInAutomation
 
 automation_bp = Blueprint('automation', __name__)
+
+# Variável global para controlar o status da automação
+automation_status = {
+    'running': False,
+    'progress': 0,
+    'current_platform': '',
+    'logs': [],
+    'results': {
+        'total_jobs': 0,
+        'applications_sent': 0,
+        'success_rate': 0,
+        'jobs_by_platform': {}
+    }
+}
+
+def add_log(message, level="INFO"):
+    """Adiciona log ao status da automação"""
+    timestamp = time.strftime("%H:%M:%S")
+    log_entry = {
+        'timestamp': timestamp,
+        'level': level,
+        'message': message
+    }
+    automation_status['logs'].append(log_entry)
+    
+    # Mantém apenas os últimos 100 logs
+    if len(automation_status['logs']) > 100:
+        automation_status['logs'] = automation_status['logs'][-100:]
+
+def run_linkedin_automation(credentials, job_criteria, session_id):
+    """Executa a automação do LinkedIn em thread separada"""
+    try:
+        add_log("🚀 Iniciando automação do LinkedIn...", "SUCCESS")
+        automation_status['current_platform'] = 'LinkedIn'
+        automation_status['progress'] = 10
+        
+        # Inicializa a automação com histórico no banco de dados
+        linkedin_bot = LinkedInFullFlow(
+            headless=False  # Não headless para debug visual e verificação manual
+        )
+        add_log("✅ Bot do LinkedIn com histórico no banco inicializado")
+        
+        automation_status['progress'] = 20
+        
+        # Prepara tipos de vaga
+        job_types = []
+        if job_criteria.get('analista_financeiro'):
+            job_types.append("analista financeiro")
+        if job_criteria.get('contas_pagar'):
+            job_types.append("contas a pagar")
+        if job_criteria.get('contas_receber'):
+            job_types.append("contas a receber")
+        if job_criteria.get('analista_precificacao'):
+            job_types.append("analista de precificacao")
+        if job_criteria.get('custos'):
+            job_types.append("custos")
+            
+        if not job_types:
+            job_types = ["analista financeiro"]  # Padrão
+            
+        add_log(f"🎯 Tipos de vaga selecionados: {', '.join(job_types)}")
+        
+        # Máximo de aplicações
+        max_applications = job_criteria.get('max_applications', 3)
+        add_log(f"📊 Máximo de aplicações configurado: {max_applications}")
+        
+        # Extrai credenciais do dicionário
+        linkedin_email = credentials.get("linkedin_email")
+        linkedin_password = credentials.get("linkedin_password")
+
+        if not linkedin_email or not linkedin_password:
+            add_log("❌ Credenciais do LinkedIn não fornecidas ou incompletas.", "ERROR")
+            return
+
+        # Executa automação completa com histórico
+        add_log("🚀 Executando automação completa com histórico no banco...")
+        result = linkedin_bot.start_full_automation(
+            username=linkedin_email,
+            password=linkedin_password,
+            job_types=job_types,
+            max_applications=max_applications,
+            session_id=automation_status["session_id"]
+        )
+
+        
+        
+        if result.get("success"):
+            applications_sent = result.get("applications_sent", 0)
+            applied_jobs = result.get("applied_jobs", [])
+            
+            add_log(f"🎉 Automação concluída com sucesso!", "SUCCESS")
+            add_log(f"📈 Total de aplicações enviadas: {applications_sent}", "SUCCESS")
+            
+            # Atualiza resultados
+            automation_status['results']['applications_sent'] += applications_sent
+            automation_status['results']['total_jobs'] += len(applied_jobs)
+            automation_status['results']['jobs_by_platform']['LinkedIn'] = {
+                'found': len(applied_jobs),
+                'applied': applications_sent
+            }
+            
+            # Salva no banco de dados
+            for job_info in applied_jobs:
+                try:
+                    job = Job(
+                        title=job_info.get('title', ''),
+                        company=job_info.get('company', ''),
+                        location=job_info.get('location', ''),
+                        platform='LinkedIn',
+                        job_url=job_info.get('url', ''),
+                        status='applied',
+                        job_id=job_info.get('job_id', '')
+                    )
+                    db.session.add(job)
+                    db.session.commit()
+                    add_log(f"💾 Vaga salva: {job_info.get('title', 'N/A')}")
+                except Exception as e:
+                    add_log(f"⚠️ Erro ao salvar vaga: {str(e)}", "WARNING")
+                    
+        else:
+            error_msg = result.get("error", "Erro desconhecido")
+            add_log(f"❌ Falha na automação: {error_msg}", "ERROR")
+        
+        # Fecha o navegador
+        linkedin_bot.close()
+        add_log("🔚 Navegador fechado")
+        
+    except Exception as e:
+        add_log(f"💥 Erro crítico na automação: {str(e)}", "ERROR")
+        automation_status['progress'] = 100
+    finally:
+        automation_status['running'] = False
+        automation_status['current_platform'] = ''
+        add_log("🏁 Automação finalizada", "SUCCESS")
+
+@automation_bp.route('/start', methods=['POST'])
+def start_automation():
+    """Inicia o processo de automação"""
+    try:
+        if automation_status['running']:
+            return jsonify({'error': 'Automação já está em execução'}), 400
+            
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Dados não fornecidos'}), 400
+            
+        # Reseta status        automation_status["running"] = True
+        automation_status["logs"] = []
+        automation_status['results'] = {
+            'total_jobs': 0,
+            'applications_sent': 0,
+            'success_rate': 0,
+            'jobs_by_platform': {}
+        }
+        
+        add_log("🎬 Iniciando processo de automação...", "SUCCESS")
+        
+        # Obtém credenciais do banco
+        credentials = {}
+        try:
+            linkedin_cred = Credentials.query.filter_by(platform='linkedin').first()
+            if linkedin_cred:
+                credentials['linkedin_email'] = linkedin_cred.username
+                credentials['linkedin_password'] = linkedin_cred.password
+                add_log("✅ Credenciais do LinkedIn carregadas")
+            else:
+                add_log("⚠️ Credenciais do LinkedIn não encontradas", "WARNING")
+        except Exception as e:
+            add_log(f"❌ Erro ao carregar credenciais: {str(e)}", "ERROR")
+            
+        # Critérios de busca
+        job_criteria = data.get('criteria', {})
+        add_log(f"📋 Critérios de busca configurados: {json.dumps(job_criteria, indent=2)}")
+        
+        # Inicia automação em thread separada
+        if data.get('platforms', {}).get('linkedin', False):
+            session_id = str(uuid.uuid4())
+            automation_status['session_id'] = session_id
+            thread = threading.Thread(
+                target=run_linkedin_automation,
+                args=(credentials, job_criteria, session_id)
+            )
+
+            thread.daemon = True
+            thread.start()
+            add_log("🚀 Thread de automação do LinkedIn iniciada")
+        else:
+            add_log("ℹ️ LinkedIn não selecionado para automação", "INFO")
+            automation_status['running'] = False
+            
+        return jsonify({
+            'success': True,
+            'message': 'Automação iniciada com sucesso'
+        }), 200
+        
+    except Exception as e:
+        automation_status['running'] = False
+        add_log(f"💥 Erro ao iniciar automação: {str(e)}", "ERROR")
+        return jsonify({'error': f'Erro ao iniciar automação: {str(e)}'}), 500
+
+@automation_bp.route('/status', methods=['GET'])
+def get_automation_status():
+    """Retorna o status atual da automação"""
+    try:
+        # Calcula taxa de sucesso
+        if automation_status['results']['total_jobs'] > 0:
+            success_rate = (automation_status['results']['applications_sent'] / 
+                          automation_status['results']['total_jobs']) * 100
+            automation_status['results']['success_rate'] = round(success_rate, 1)
+            
+        return jsonify({
+            'success': True,
+            'status': automation_status
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao obter status: {str(e)}'}), 500
+
+@automation_bp.route('/stop', methods=['POST'])
+def stop_automation():
+    """Para a automação em execução"""
+    try:
+        if not automation_status['running']:
+            return jsonify({'error': 'Nenhuma automação em execução'}), 400
+            
+        automation_status['running'] = False
+        add_log("🛑 Automação interrompida pelo usuário", "WARNING")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Automação interrompida'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao parar automação: {str(e)}'}), 500
+
+@automation_bp.route('/results', methods=['GET'])
+def get_results():
+    """Retorna os resultados das aplicações"""
+    try:
+        # Busca vagas do banco de dados
+        jobs = Job.query.order_by(Job.created_at.desc()).limit(50).all()
+        
+        jobs_data = []
+        for job in jobs:
+            jobs_data.append({
+                'id': job.id,
+                'title': job.title,
+                'company': job.company,
+                'location': job.location,
+                'platform': job.platform,
+                'status': job.status,
+                'applied_at': job.created_at.isoformat() if job.created_at else None,
+                'job_url': job.job_url
+            })
+            
+        return jsonify({
+            'success': True,
+            'results': automation_status['results'],
+            'jobs': jobs_data
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao obter resultados: {str(e)}'}), 500
+
+@automation_bp.route('/logs', methods=['GET'])
+def get_logs():
+    """Retorna os logs da automação"""
+    try:
+        return jsonify({
+            'success': True,
+            'logs': automation_status['logs']
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao obter logs: {str(e)}'}), 500
 
 @automation_bp.route('/credentials', methods=['POST'])
 def save_credentials():
@@ -27,14 +305,12 @@ def save_credentials():
             # Atualiza credencial existente
             existing_cred.username = data['username']
             existing_cred.password = data['password']
-            existing_cred.google_linked = data.get('google_linked', False)
         else:
             # Cria nova credencial
             new_cred = Credentials(
                 platform=data['platform'],
                 username=data['username'],
-                password=data['password'],
-                google_linked=data.get('google_linked', False)
+                password=data['password']
             )
             db.session.add(new_cred)
         
@@ -53,293 +329,15 @@ def get_credentials():
         result = []
         
         for cred in credentials:
-            cred_dict = cred.to_dict()
-            # Remove a senha da resposta por segurança
-            cred_dict.pop('password', None)
-            result.append(cred_dict)
+            result.append({
+                'id': cred.id,
+                'platform': cred.platform,
+                'username': cred.username,
+                'created_at': cred.created_at.isoformat() if cred.created_at else None
+            })
         
         return jsonify(result), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-@automation_bp.route('/search-jobs', methods=['POST'])
-def search_jobs():
-    """Inicia a busca de vagas"""
-    try:
-        data = request.get_json()
-        
-        # Valida os dados recebidos
-        required_fields = ['job_types', 'platforms']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Campo {field} é obrigatório'}), 400
-        
-        job_types = data['job_types']
-        platforms = data['platforms']
-        filters = data.get('filters', {})
-        
-        results = {
-            'total_jobs_found': 0,
-            'total_applications': 0,
-            'platform_results': {},
-            'errors': []
-        }
-        
-        # Processa cada plataforma
-        for platform in platforms:
-            try:
-                platform_result = _search_platform_jobs(platform, job_types, filters)
-                results['platform_results'][platform] = platform_result
-                results['total_jobs_found'] += platform_result['jobs_found']
-                results['total_applications'] += platform_result['applications_sent']
-                
-            except Exception as e:
-                error_msg = f"Erro na plataforma {platform}: {str(e)}"
-                results['errors'].append(error_msg)
-                current_app.logger.error(error_msg)
-        
-        return jsonify(results), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-def _search_platform_jobs(platform, job_types, filters):
-    """Busca vagas em uma plataforma específica"""
-    result = {
-        'jobs_found': 0,
-        'applications_sent': 0,
-        'jobs': [],
-        'errors': []
-    }
-    
-    try:
-        # Busca as credenciais da plataforma
-        credentials = Credentials.query.filter_by(platform=platform).first()
-        if not credentials:
-            raise Exception(f"Credenciais não encontradas para {platform}")
-        
-        if platform.lower() == 'linkedin':
-            result = _search_linkedin_jobs(credentials, job_types, filters)
-        elif platform.lower() == 'infojobs':
-            result = _search_infojobs_jobs(credentials, job_types, filters)
-        elif platform.lower() == 'catho':
-            result = _search_catho_jobs(credentials, job_types, filters)
-        elif platform.lower() == 'gupy':
-            result = _search_gupy_jobs(credentials, job_types, filters)
-        else:
-            raise Exception(f"Plataforma {platform} não suportada")
-            
-    except Exception as e:
-        result['errors'].append(str(e))
-        
-    return result
-
-def _search_linkedin_jobs(credentials, job_types, filters):
-    """Busca vagas no LinkedIn"""
-    result = {
-        'jobs_found': 0,
-        'applications_sent': 0,
-        'jobs': [],
-        'errors': []
-    }
-    
-    automation = None
-    try:
-        automation = LinkedInAutomation(headless=True)
-        automation.setup_driver()
-        
-        # Faz login
-        if not automation.login(credentials.username, credentials.password):
-            raise Exception("Falha no login do LinkedIn")
-        
-        # Busca vagas
-        jobs_found = automation.search_jobs(
-            job_types=job_types,
-            location=filters.get('location', 'São Paulo'),
-            salary_min=filters.get('salary_min', 1900)
-        )
-        
-        result['jobs_found'] = len(jobs_found)
-        
-        # Salva as vagas no banco de dados
-        for job_data in jobs_found:
-            try:
-                # Verifica se a vaga já existe
-                existing_job = Job.query.filter_by(
-                    job_id=job_data['job_id'],
-                    platform=job_data['platform']
-                ).first()
-                
-                if not existing_job:
-                    new_job = Job(
-                        job_id=job_data['job_id'],
-                        platform=job_data['platform'],
-                        title=job_data['title'],
-                        company=job_data['company'],
-                        location=job_data['location'],
-                        url=job_data['url'],
-                        salary_range=job_data.get('salary_range'),
-                        status='found'
-                    )
-                    db.session.add(new_job)
-                    result['jobs'].append(job_data)
-                    
-            except Exception as e:
-                result['errors'].append(f"Erro ao salvar vaga: {str(e)}")
-        
-        db.session.commit()
-        
-    except Exception as e:
-        result['errors'].append(str(e))
-        db.session.rollback()
-    finally:
-        if automation:
-            automation.close_driver()
-    
-    return result
-
-def _search_infojobs_jobs(credentials, job_types, filters):
-    """Busca vagas no Infojobs (placeholder)"""
-    # TODO: Implementar automação do Infojobs
-    return {
-        'jobs_found': 0,
-        'applications_sent': 0,
-        'jobs': [],
-        'errors': ['Infojobs ainda não implementado']
-    }
-
-def _search_catho_jobs(credentials, job_types, filters):
-    """Busca vagas no Catho (placeholder)"""
-    # TODO: Implementar automação do Catho
-    return {
-        'jobs_found': 0,
-        'applications_sent': 0,
-        'jobs': [],
-        'errors': ['Catho ainda não implementado']
-    }
-
-def _search_gupy_jobs(credentials, job_types, filters):
-    """Busca vagas no Gupy (placeholder)"""
-    # TODO: Implementar automação do Gupy
-    return {
-        'jobs_found': 0,
-        'applications_sent': 0,
-        'jobs': [],
-        'errors': ['Gupy ainda não implementado']
-    }
-
-@automation_bp.route('/jobs', methods=['GET'])
-def get_jobs():
-    """Retorna as vagas encontradas"""
-    try:
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 20, type=int)
-        platform = request.args.get('platform')
-        status = request.args.get('status')
-        
-        query = Job.query
-        
-        if platform:
-            query = query.filter_by(platform=platform)
-        if status:
-            query = query.filter_by(status=status)
-            
-        jobs = query.order_by(Job.created_at.desc()).paginate(
-            page=page, per_page=per_page, error_out=False
-        )
-        
-        result = {
-            'jobs': [job.to_dict() for job in jobs.items],
-            'total': jobs.total,
-            'pages': jobs.pages,
-            'current_page': page
-        }
-        
-        return jsonify(result), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@automation_bp.route('/apply-jobs', methods=['POST'])
-def apply_jobs():
-    """Aplica para vagas selecionadas"""
-    try:
-        data = request.get_json()
-        job_ids = data.get('job_ids', [])
-        resume_path = data.get('resume_path')
-        
-        if not job_ids:
-            return jsonify({'error': 'Nenhuma vaga selecionada'}), 400
-        
-        results = {
-            'total_applications': 0,
-            'successful_applications': 0,
-            'failed_applications': 0,
-            'details': []
-        }
-        
-        for job_id in job_ids:
-            job = Job.query.get(job_id)
-            if not job:
-                continue
-                
-            try:
-                success = _apply_to_job(job, resume_path)
-                if success:
-                    job.status = 'applied'
-                    results['successful_applications'] += 1
-                else:
-                    job.status = 'application_failed'
-                    results['failed_applications'] += 1
-                    
-                results['total_applications'] += 1
-                results['details'].append({
-                    'job_id': job_id,
-                    'title': job.title,
-                    'company': job.company,
-                    'success': success
-                })
-                
-            except Exception as e:
-                job.status = 'application_error'
-                results['failed_applications'] += 1
-                results['details'].append({
-                    'job_id': job_id,
-                    'title': job.title,
-                    'company': job.company,
-                    'success': False,
-                    'error': str(e)
-                })
-        
-        db.session.commit()
-        return jsonify(results), 200
-        
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-def _apply_to_job(job, resume_path):
-    """Aplica para uma vaga específica"""
-    automation = None
-    try:
-        # Busca as credenciais da plataforma
-        credentials = Credentials.query.filter_by(platform=job.platform).first()
-        if not credentials:
-            return False
-        
-        if job.platform.lower() == 'linkedin':
-            automation = LinkedInAutomation(headless=True)
-            automation.setup_driver()
-            
-            if automation.login(credentials.username, credentials.password):
-                return automation.apply_to_job(job.url, resume_path)
-                
-    except Exception as e:
-        current_app.logger.error(f"Erro ao aplicar para vaga {job.job_id}: {str(e)}")
-    finally:
-        if automation:
-            automation.close_driver()
-    
-    return False
 

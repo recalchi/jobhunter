@@ -1,0 +1,1167 @@
+import time
+import random
+import logging
+import os
+import platform
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
+
+class LinkedInRobustLogin:
+    def __init__(self, headless=False, user_data_dir=None, profile_name="Default"):
+        self.headless = headless
+        self.user_data_dir = user_data_dir
+        self.profile_name = profile_name
+        self.driver = None
+        self.wait = None
+        self.applied_jobs = []
+        self.failed_applications = []
+        self.setup_logging()
+        
+        # URLs específicas conforme instruções do usuário
+        self.login_urls = [
+            "https://www.linkedin.com/uas/login?session_redirect=%2Fm%2Flogout%2F",
+            "https://www.linkedin.com/checkpoint/lg/sign-in-another-account"
+        ]
+        self.jobs_home_url = "https://www.linkedin.com/jobs"
+        self.recommended_jobs_url = "https://www.linkedin.com/jobs/collections/recommended/?currentJobId=4278856149&discover=recommended&discoveryOrigin=JOBS_HOME_JYMBII"
+        
+    def setup_logging(self):
+        """Configura o logging detalhado"""
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+    def detailed_log(self, message, level="INFO"):
+        """Log detalhado com timestamp"""
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] [{level}] LinkedIn Robust: {message}"
+        self.logger.info(formatted_message)
+        print(formatted_message)
+        
+    def get_default_user_data_dir(self):
+        """Detecta automaticamente o diretório padrão do perfil do Chrome"""
+        system = platform.system()
+        
+        if system == "Windows":
+            user_profile = os.environ.get('USERPROFILE', '')
+            return os.path.join(user_profile, 'AppData', 'Local', 'Google', 'Chrome', 'User Data')
+        elif system == "Darwin":
+            user_home = os.path.expanduser('~')
+            return os.path.join(user_home, 'Library', 'Application Support', 'Google', 'Chrome')
+        else:
+            user_home = os.path.expanduser('~')
+            return os.path.join(user_home, '.config', 'google-chrome')
+            
+    def setup_driver(self):
+        """Configura o driver do Chrome com perfil de usuário"""
+        try:
+            self.detailed_log("Configurando driver do Chrome com perfil de usuário...")
+            
+            chrome_options = Options()
+            
+            # Configurações básicas
+            if self.headless:
+                chrome_options.add_argument("--headless")
+            
+            # Configurações de perfil de usuário
+            if self.user_data_dir:
+                if os.path.exists(self.user_data_dir):
+                    chrome_options.add_argument(f"--user-data-dir={self.user_data_dir}")
+                    chrome_options.add_argument(f"--profile-directory={self.profile_name}")
+                    self.detailed_log(f"Usando perfil personalizado: {self.user_data_dir}/{self.profile_name}")
+                else:
+                    self.detailed_log(f"Diretório de perfil não encontrado: {self.user_data_dir}", "WARNING")
+                    default_dir = self.get_default_user_data_dir()
+                    if os.path.exists(default_dir):
+                        chrome_options.add_argument(f"--user-data-dir={default_dir}")
+                        chrome_options.add_argument(f"--profile-directory={self.profile_name}")
+                        self.detailed_log(f"Usando perfil padrão detectado: {default_dir}")
+            else:
+                default_dir = self.get_default_user_data_dir()
+                if os.path.exists(default_dir):
+                    chrome_options.add_argument(f"--user-data-dir={default_dir}")
+                    chrome_options.add_argument(f"--profile-directory={self.profile_name}")
+                    self.detailed_log(f"Usando perfil padrão detectado: {default_dir}")
+                else:
+                    self.detailed_log("Perfil padrão não encontrado, usando modo anônimo", "WARNING")
+            
+            # Configurações de segurança e performance
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # User agent realista
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            # Remove propriedades de automação
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            self.wait = WebDriverWait(self.driver, 15)
+            self.detailed_log("Driver configurado com sucesso!")
+            return True
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao configurar driver: {str(e)}", "ERROR")
+            return False
+            
+    def is_logged_in_robust(self):
+        """Verificação robusta de login com múltiplos indicadores"""
+        try:
+            self.detailed_log("Iniciando verificação robusta de login...")
+            
+            current_url = self.driver.current_url
+            page_source = self.driver.page_source.lower()
+            
+            self.detailed_log(f"URL atual: {current_url}")
+            
+            # Lista de indicadores positivos de login
+            login_indicators = []
+            
+            # 1. Verificação por URL
+            url_indicators = ["feed", "mynetwork", "jobs", "messaging", "notifications"]
+            for indicator in url_indicators:
+                if indicator in current_url:
+                    login_indicators.append(f"URL contém '{indicator}'")
+                    
+            # 2. Verificação por elementos da página
+            try:
+                # Foto de perfil
+                profile_photo_selectors = [
+                    ".global-nav__me-photo",
+                    ".nav-item__profile-member-photo", 
+                    "[data-control-name='identity_profile_photo']",
+                    ".global-nav__me img",
+                    ".ember-view.global-nav__me"
+                ]
+                
+                for selector in profile_photo_selectors:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if element.is_displayed():
+                            login_indicators.append(f"Elemento de perfil encontrado: {selector}")
+                            break
+                    except NoSuchElementException:
+                        continue
+                        
+                # Menu de navegação logado
+                nav_selectors = [
+                    ".global-nav__nav",
+                    ".global-nav__primary-items",
+                    "[data-control-name='nav.settings']"
+                ]
+                
+                for selector in nav_selectors:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if element.is_displayed():
+                            login_indicators.append(f"Menu de navegação encontrado: {selector}")
+                            break
+                    except NoSuchElementException:
+                        continue
+                        
+                # Botão "Eu" ou "Me"
+                me_button_selectors = [
+                    "a[href*='/in/']",
+                    ".global-nav__me",
+                    "[data-control-name='identity_profile_photo']"
+                ]
+                
+                for selector in me_button_selectors:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if element.is_displayed():
+                            login_indicators.append(f"Botão 'Eu' encontrado: {selector}")
+                            break
+                    except NoSuchElementException:
+                        continue
+                        
+            except Exception as e:
+                self.detailed_log(f"Erro ao verificar elementos: {str(e)}", "WARNING")
+            
+            # 3. Verificação por conteúdo da página
+            content_indicators = ["feed-identity-module", "profile-photo", "global-nav"]
+            for indicator in content_indicators:
+                if indicator in page_source:
+                    login_indicators.append(f"Conteúdo contém '{indicator}'")
+            
+            # 4. Verificação negativa (indicadores de NÃO login)
+            negative_indicators = []
+            
+            # URLs que indicam não login
+            negative_urls = ["login", "uas/login", "checkpoint/lg"]
+            for indicator in negative_urls:
+                if indicator in current_url:
+                    negative_indicators.append(f"URL contém '{indicator}' (não logado)")
+                    
+            # Elementos que indicam não login
+            try:
+                login_form_selectors = [
+                    "#username",
+                    "input[name='session_key']",
+                    ".login-form",
+                    "#organic-div"
+                ]
+                
+                for selector in login_form_selectors:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if element.is_displayed():
+                            negative_indicators.append(f"Formulário de login encontrado: {selector}")
+                    except NoSuchElementException:
+                        continue
+                        
+            except Exception:
+                pass
+            
+            # Análise dos resultados
+            self.detailed_log(f"Indicadores positivos encontrados: {len(login_indicators)}")
+            for indicator in login_indicators:
+                self.detailed_log(f"  ✅ {indicator}")
+                
+            self.detailed_log(f"Indicadores negativos encontrados: {len(negative_indicators)}")
+            for indicator in negative_indicators:
+                self.detailed_log(f"  ❌ {indicator}")
+            
+            # Decisão final
+            if len(login_indicators) >= 2 and len(negative_indicators) == 0:
+                self.detailed_log("RESULTADO: Usuário está LOGADO", "SUCCESS")
+                return True
+            elif len(login_indicators) >= 1 and len(negative_indicators) == 0:
+                self.detailed_log("RESULTADO: Provavelmente logado (verificação adicional)", "INFO")
+                # Verificação adicional navegando para /feed
+                return self.verify_login_by_navigation()
+            else:
+                self.detailed_log("RESULTADO: Usuário NÃO está logado", "WARNING")
+                return False
+                
+        except Exception as e:
+            self.detailed_log(f"Erro na verificação de login: {str(e)}", "ERROR")
+            return False
+            
+    def verify_login_by_navigation(self):
+        """Verificação adicional navegando para página que requer login"""
+        try:
+            self.detailed_log("Executando verificação adicional por navegação...")
+            
+            # Salva URL atual
+            original_url = self.driver.current_url
+            
+            # Navega para feed (requer login)
+            self.driver.get("https://www.linkedin.com/feed/")
+            time.sleep(3)
+            
+            new_url = self.driver.current_url
+            self.detailed_log(f"Após navegar para /feed, URL atual: {new_url}")
+            
+            if "feed" in new_url:
+                self.detailed_log("Verificação adicional: Login CONFIRMADO", "SUCCESS")
+                return True
+            elif "login" in new_url or "uas/login" in new_url:
+                self.detailed_log("Verificação adicional: Login NÃO confirmado", "WARNING")
+                return False
+            else:
+                self.detailed_log("Verificação adicional: Resultado inconclusivo", "WARNING")
+                return False
+                
+        except Exception as e:
+            self.detailed_log(f"Erro na verificação adicional: {str(e)}", "ERROR")
+            return False
+            
+    def force_navigate_to_jobs(self):
+        """Força navegação para seção de vagas, independente do status de login"""
+        try:
+            self.detailed_log("Forçando navegação para seção de vagas...")
+            
+            # Navega diretamente para página de vagas
+            self.driver.get(self.jobs_home_url)
+            time.sleep(5)
+            
+            current_url = self.driver.current_url
+            self.detailed_log(f"Após navegar para /jobs, URL atual: {current_url}")
+            
+            # Verifica se chegou na página de vagas
+            if "jobs" in current_url:
+                self.detailed_log("Navegação para vagas: SUCESSO", "SUCCESS")
+                return True
+            elif "login" in current_url:
+                self.detailed_log("Navegação redirecionou para login - usuário não está logado", "ERROR")
+                return False
+            else:
+                self.detailed_log("Navegação para vagas: resultado inesperado", "WARNING")
+                # Tenta navegar para URL de vagas recomendadas
+                self.detailed_log("Tentando navegar para vagas recomendadas...")
+                self.driver.get(self.recommended_jobs_url)
+                time.sleep(5)
+                
+                final_url = self.driver.current_url
+                self.detailed_log(f"URL final após navegação: {final_url}")
+                
+                if "jobs" in final_url:
+                    self.detailed_log("Navegação para vagas recomendadas: SUCESSO", "SUCCESS")
+                    return True
+                else:
+                    return False
+                    
+        except Exception as e:
+            self.detailed_log(f"Erro ao navegar para vagas: {str(e)}", "ERROR")
+            return False
+            
+    def smart_login_flow(self, username=None, password=None):
+        """Fluxo inteligente de login que evita loops"""
+        try:
+            self.detailed_log("=== INICIANDO FLUXO INTELIGENTE DE LOGIN ===", "SUCCESS")
+            
+            if not self.driver:
+                if not self.setup_driver():
+                    return False
+            
+            # Etapa 1: Verificação inicial de login
+            self.detailed_log("ETAPA 1: Verificação inicial de login")
+            if self.is_logged_in_robust():
+                self.detailed_log("Login já confirmado - prosseguindo para vagas", "SUCCESS")
+                return self.force_navigate_to_jobs()
+            
+            # Etapa 2: Se não está logado, verifica se tem credenciais
+            if not username or not password:
+                self.detailed_log("ETAPA 2: Credenciais não fornecidas - tentando navegação direta", "WARNING")
+                # Tenta navegar diretamente (pode funcionar se perfil do Chrome já está logado)
+                if self.force_navigate_to_jobs():
+                    return True
+                else:
+                    self.detailed_log("Navegação direta falhou - credenciais necessárias", "ERROR")
+                    return False
+            
+            # Etapa 3: Executa login
+            self.detailed_log("ETAPA 3: Executando processo de login")
+            if not self.execute_login(username, password):
+                return False
+            
+            # Etapa 4: Verificação pós-login
+            self.detailed_log("ETAPA 4: Verificação pós-login")
+            if self.is_logged_in_robust():
+                self.detailed_log("Login pós-processo confirmado", "SUCCESS")
+                return self.force_navigate_to_jobs()
+            else:
+                self.detailed_log("Login pós-processo NÃO confirmado", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.detailed_log(f"Erro no fluxo de login: {str(e)}", "ERROR")
+            return False
+            
+    def execute_login(self, username, password):
+        """Executa o processo de login"""
+        try:
+            self.detailed_log("Iniciando processo de login...")
+            
+            # Navega para primeira URL de login
+            self.detailed_log("Navegando para página de login...")
+            self.driver.get(self.login_urls[0])
+            time.sleep(5)
+            
+            # Verifica se já foi redirecionado (login automático)
+            current_url = self.driver.current_url
+            if "feed" in current_url or "jobs" in current_url:
+                self.detailed_log("Login automático detectado após navegação!", "SUCCESS")
+                return True
+            
+            # Se não conseguir na primeira URL, tenta a segunda
+            if "login" not in current_url.lower():
+                self.detailed_log("Tentando segunda URL de login...")
+                self.driver.get(self.login_urls[1])
+                time.sleep(5)
+            
+            # Preenche formulário de login
+            self.detailed_log("Preenchendo formulário de login...")
+            
+            # Campo de email
+            email_field = self.find_login_field("email")
+            if not email_field:
+                self.detailed_log("Campo de email não encontrado", "ERROR")
+                return False
+                
+            self.detailed_log("Preenchendo email...")
+            self.human_type(email_field, username)
+            time.sleep(2)
+            
+            # Campo de senha
+            password_field = self.find_login_field("password")
+            if not password_field:
+                self.detailed_log("Campo de senha não encontrado", "ERROR")
+                return False
+                
+            self.detailed_log("Preenchendo senha...")
+            self.human_type(password_field, password)
+            time.sleep(2)
+            
+            # Botão de login
+            login_button = self.find_login_button()
+            if not login_button:
+                self.detailed_log("Botão de login não encontrado", "ERROR")
+                return False
+                
+            self.detailed_log("Clicando no botão de login...")
+            login_button.click()
+            time.sleep(8)  # Aguarda mais tempo para processamento
+            
+            # Verifica resultado
+            current_url = self.driver.current_url
+            self.detailed_log(f"URL após login: {current_url}")
+            
+            if "feed" in current_url or "jobs" in current_url or "mynetwork" in current_url:
+                self.detailed_log("Login realizado com sucesso!", "SUCCESS")
+                return True
+            elif "challenge" in current_url or "checkpoint" in current_url:
+                self.detailed_log("Desafio de segurança detectado - aguardando resolução manual...", "WARNING")
+                return self.handle_security_challenge()
+            else:
+                self.detailed_log(f"Login pode ter falhado - URL inesperada: {current_url}", "WARNING")
+                # Aguarda um pouco mais e verifica novamente
+                time.sleep(5)
+                return self.is_logged_in_robust()
+                
+        except Exception as e:
+            self.detailed_log(f"Erro durante login: {str(e)}", "ERROR")
+            return False
+            
+    def find_login_field(self, field_type):
+        """Encontra campo de login (email ou senha)"""
+        if field_type == "email":
+            selectors = [
+                "#username",
+                "input[name='session_key']",
+                "input[type='email']",
+                "input[autocomplete='username']",
+                "input[id*='username']",
+                "input[id*='email']"
+            ]
+        else:  # password
+            selectors = [
+                "#password",
+                "input[name='session_password']",
+                "input[type='password']",
+                "input[autocomplete='current-password']",
+                "input[id*='password']"
+            ]
+        
+        for selector in selectors:
+            try:
+                element = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                if element.is_displayed():
+                    return element
+            except TimeoutException:
+                continue
+                
+        return None
+        
+    def find_login_button(self):
+        """Encontra botão de login"""
+        selectors = [
+            "button[type='submit']",
+            "button[data-id='sign-in-form__submit-btn']",
+            ".btn__primary--large",
+            "input[type='submit']",
+            "button[aria-label*='Sign in']",
+            ".sign-in-form__submit-button"
+        ]
+        
+        for selector in selectors:
+            try:
+                element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                if element.is_displayed():
+                    return element
+            except NoSuchElementException:
+                continue
+                
+        return None
+        
+    def handle_security_challenge(self):
+        """Lida com desafios de segurança"""
+        try:
+            self.detailed_log("Detectado desafio de segurança - aguardando resolução manual...")
+            
+            # Aguarda até 3 minutos para resolução manual
+            for i in range(36):  # 36 * 5 = 180 segundos
+                time.sleep(5)
+                current_url = self.driver.current_url
+                
+                if "feed" in current_url or "jobs" in current_url or "mynetwork" in current_url:
+                    self.detailed_log("Desafio resolvido - login completado!", "SUCCESS")
+                    return True
+                    
+                if i % 6 == 0:  # Log a cada 30 segundos
+                    self.detailed_log(f"Aguardando resolução do desafio... ({i*5}s)")
+            
+            self.detailed_log("Timeout na resolução do desafio", "ERROR")
+            return False
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao lidar com desafio: {str(e)}", "ERROR")
+            return False
+            
+    def random_delay(self, min_seconds=2, max_seconds=5):
+        """Delay aleatório para parecer mais humano"""
+        delay = random.uniform(min_seconds, max_seconds)
+        time.sleep(delay)
+        
+    def human_type(self, element, text):
+        """Digita texto de forma mais humana"""
+        element.clear()
+        for char in text:
+            element.send_keys(char)
+            time.sleep(random.uniform(0.05, 0.2))
+            
+    def navigate_to_jobs_section(self):
+        """Navega para a seção de vagas"""
+        try:
+            self.detailed_log("Navegando para seção de vagas...")
+            
+            # Já deve estar na página de vagas após force_navigate_to_jobs
+            current_url = self.driver.current_url
+            
+            if "jobs" not in current_url:
+                self.detailed_log("Não está na página de vagas - navegando...")
+                if not self.force_navigate_to_jobs():
+                    return False
+            
+            # Procura por link para vagas recomendadas
+            self.detailed_log("Procurando link para vagas recomendadas...")
+            
+            show_all_selectors = [
+                "a[href*='collections/recommended']",
+                "a[data-control-name='jobs_home_jymbii_see_all']",
+                ".jobs-home-jymbii__see-all-link",
+                "a:contains('Exibir todas')",
+                "a:contains('Ver todas')"
+            ]
+            
+            show_all_link = None
+            for selector in show_all_selectors:
+                try:
+                    if ":contains" in selector:
+                        # Para seletores com texto, usa XPath
+                        text_content = selector.split(":contains('")[1].rstrip("')")
+                        xpath = f"//a[contains(text(), '{text_content}')]"
+                        show_all_link = self.driver.find_element(By.XPATH, xpath)
+                    else:
+                        show_all_link = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+            if show_all_link:
+                self.detailed_log("Clicando em 'Exibir todas' as vagas...")
+                show_all_link.click()
+                time.sleep(5)
+            else:
+                # Se não encontrar, navega diretamente
+                self.detailed_log("Link não encontrado - navegando diretamente para vagas recomendadas...")
+                self.driver.get(self.recommended_jobs_url)
+                time.sleep(5)
+                
+            self.detailed_log("Navegação para seção de vagas concluída")
+            return True
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao navegar para seção de vagas: {str(e)}", "ERROR")
+            return False
+            
+    def apply_filters(self, location="São Paulo, SP"):
+        """Aplica filtros de localização e candidatura simplificada"""
+        try:
+            self.detailed_log("Aplicando filtros de busca...")
+            
+            # Procura por botão de filtros
+            filter_selectors = [
+                "button[aria-label*='filtro']",
+                "button[data-control-name='filter_button']",
+                ".jobs-search-box__filter-button",
+                "button:contains('Filtros')"
+            ]
+            
+            filter_button = None
+            for selector in filter_selectors:
+                try:
+                    if ":contains" in selector:
+                        filter_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Filtros')]")
+                    else:
+                        filter_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+            if filter_button:
+                self.detailed_log("Abrindo painel de filtros...")
+                filter_button.click()
+                time.sleep(3)
+                
+                # Aplica filtro de localização
+                self.apply_location_filter(location)
+                
+                # Aplica filtro de candidatura simplificada
+                self.apply_easy_apply_filter()
+                
+                # Aplica filtros
+                apply_button_selectors = [
+                    "button[data-control-name='filter_show_results']",
+                    ".jobs-search-box__submit-button",
+                    "button:contains('Mostrar resultados')"
+                ]
+                
+                for selector in apply_button_selectors:
+                    try:
+                        if ":contains" in selector:
+                            apply_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Mostrar') or contains(text(), 'resultados')]")
+                        else:
+                            apply_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        self.detailed_log("Aplicando filtros...")
+                        apply_button.click()
+                        time.sleep(5)
+                        break
+                    except NoSuchElementException:
+                        continue
+                        
+            self.detailed_log("Filtros aplicados com sucesso")
+            return True
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao aplicar filtros: {str(e)}", "ERROR")
+            return False
+            
+    def apply_location_filter(self, location):
+        """Aplica filtro de localização"""
+        try:
+            location_selectors = [
+                "input[placeholder*='localização']",
+                "input[placeholder*='Localização']",
+                "input[aria-label*='localização']",
+                "input[id*='location']"
+            ]
+            
+            for selector in location_selectors:
+                try:
+                    location_field = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    self.detailed_log(f"Definindo localização: {location}")
+                    self.human_type(location_field, location)
+                    time.sleep(2)
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+        except Exception as e:
+            self.detailed_log(f"Erro ao aplicar filtro de localização: {str(e)}", "WARNING")
+            
+    def apply_easy_apply_filter(self):
+        """Aplica filtro de candidatura simplificada"""
+        try:
+            easy_apply_selectors = [
+                "input[value='easy-apply']",
+                "label[for*='easy-apply']",
+                "input[id*='easy-apply']"
+            ]
+            
+            for selector in easy_apply_selectors:
+                try:
+                    easy_apply_checkbox = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if not easy_apply_checkbox.is_selected():
+                        self.detailed_log("Ativando filtro de candidatura simplificada...")
+                        easy_apply_checkbox.click()
+                        time.sleep(2)
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+        except Exception as e:
+            self.detailed_log(f"Erro ao aplicar filtro Easy Apply: {str(e)}", "WARNING")
+            
+    def search_and_apply_jobs(self, job_types, max_applications=3):
+        """Busca e aplica para vagas dos tipos especificados"""
+        try:
+            self.detailed_log(f"Iniciando busca por vagas: {', '.join(job_types)}")
+            
+            applications_sent = 0
+            jobs_found = []
+            
+            # Busca cards de vagas na página
+            job_card_selectors = [
+                ".job-search-card",
+                ".jobs-search-results__list-item",
+                ".job-card-container",
+                "[data-job-id]",
+                ".jobs-search-results-list__item"
+            ]
+            
+            job_cards = []
+            for selector in job_card_selectors:
+                try:
+                    job_cards = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if job_cards:
+                        self.detailed_log(f"Encontrados {len(job_cards)} cards usando seletor: {selector}")
+                        break
+                except:
+                    continue
+                    
+            if not job_cards:
+                self.detailed_log("Nenhum card de vaga encontrado", "WARNING")
+                return {"success": False, "error": "Nenhuma vaga encontrada"}
+            
+            self.detailed_log(f"Processando {len(job_cards)} vagas encontradas")
+            
+            for i, card in enumerate(job_cards):
+                if applications_sent >= max_applications:
+                    self.detailed_log(f"Limite de aplicações atingido: {applications_sent}/{max_applications}")
+                    break
+                    
+                try:
+                    self.detailed_log(f"Analisando vaga {i+1}/{len(job_cards)}")
+                    
+                    # Extrai informações da vaga
+                    job_info = self.extract_job_info(card)
+                    
+                    if not job_info:
+                        self.detailed_log("Não foi possível extrair informações da vaga", "WARNING")
+                        continue
+                        
+                    # Verifica se a vaga é relevante
+                    if self.is_relevant_job(job_info['title'], job_types):
+                        self.detailed_log(f"Vaga relevante: {job_info['title']} - {job_info['company']}", "SUCCESS")
+                        
+                        # Tenta aplicar para a vaga
+                        if self.apply_to_job(card, job_info):
+                            applications_sent += 1
+                            job_info['status'] = 'applied'
+                            self.applied_jobs.append(job_info)
+                            self.detailed_log(f"✅ Aplicação {applications_sent}/{max_applications} enviada!", "SUCCESS")
+                            
+                            # Delay entre aplicações
+                            if applications_sent < max_applications:
+                                delay_time = random.uniform(15, 25)
+                                self.detailed_log(f"Aguardando {delay_time:.1f}s antes da próxima aplicação...")
+                                time.sleep(delay_time)
+                        else:
+                            job_info['status'] = 'failed'
+                            self.failed_applications.append(job_info)
+                            self.detailed_log("Falha ao aplicar para esta vaga", "WARNING")
+                            
+                        jobs_found.append(job_info)
+                    else:
+                        self.detailed_log(f"Vaga não relevante: {job_info['title']}")
+                    
+                    time.sleep(random.uniform(2, 4))
+                    
+                except Exception as e:
+                    self.detailed_log(f"Erro ao processar vaga {i+1}: {str(e)}", "WARNING")
+                    continue
+            
+            # Relatório final
+            self.detailed_log("=== RELATÓRIO FINAL ===", "SUCCESS")
+            self.detailed_log(f"Vagas analisadas: {len(job_cards)}")
+            self.detailed_log(f"Vagas relevantes: {len(jobs_found)}")
+            self.detailed_log(f"Aplicações enviadas: {applications_sent}")
+            self.detailed_log(f"Aplicações falharam: {len(self.failed_applications)}")
+            
+            return {
+                "success": True,
+                "applications_sent": applications_sent,
+                "applied_jobs": self.applied_jobs,
+                "failed_applications": self.failed_applications,
+                "jobs_found": jobs_found
+            }
+            
+        except Exception as e:
+            self.detailed_log(f"Erro na busca e aplicação: {str(e)}", "ERROR")
+            return {"success": False, "error": str(e)}
+            
+    def extract_job_info(self, job_card):
+        """Extrai informações de um card de vaga"""
+        try:
+            job_info = {}
+            
+            # Título da vaga
+            title_selectors = [
+                ".job-search-card__title a",
+                ".job-card-list__title a",
+                "h3 a",
+                "[data-control-name='job_search_job_title']",
+                ".jobs-search-results__list-item h3 a"
+            ]
+            
+            for selector in title_selectors:
+                try:
+                    title_element = job_card.find_element(By.CSS_SELECTOR, selector)
+                    job_info['title'] = title_element.text.strip()
+                    job_info['url'] = title_element.get_attribute('href')
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+            if not job_info.get('title'):
+                return None
+                
+            # Empresa
+            company_selectors = [
+                ".job-search-card__subtitle a",
+                ".job-card-container__company-name a",
+                "h4 a",
+                ".jobs-search-results__list-item h4 a"
+            ]
+            
+            for selector in company_selectors:
+                try:
+                    company_element = job_card.find_element(By.CSS_SELECTOR, selector)
+                    job_info['company'] = company_element.text.strip()
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+            job_info['company'] = job_info.get('company', 'Empresa não identificada')
+            
+            # Localização
+            location_selectors = [
+                ".job-search-card__location",
+                ".job-card-container__metadata-item",
+                ".jobs-search-results__list-item .job-search-card__location"
+            ]
+            
+            for selector in location_selectors:
+                try:
+                    location_element = job_card.find_element(By.CSS_SELECTOR, selector)
+                    job_info['location'] = location_element.text.strip()
+                    break
+                except NoSuchElementException:
+                    continue
+                    
+            job_info['location'] = job_info.get('location', 'São Paulo, SP')
+            
+            # ID da vaga
+            job_id = job_card.get_attribute('data-job-id')
+            if not job_id and job_info.get('url'):
+                # Extrai ID da URL
+                url_parts = job_info['url'].split('/')
+                for part in url_parts:
+                    if part.isdigit():
+                        job_id = part
+                        break
+            job_info['job_id'] = job_id or f"job_{int(time.time())}"
+            
+            return job_info
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao extrair informações da vaga: {str(e)}", "WARNING")
+            return None
+            
+    def is_relevant_job(self, job_title, job_types):
+        """Verifica se a vaga é relevante para os tipos especificados"""
+        job_title_lower = job_title.lower()
+        
+        relevance_keywords = {
+            "analista financeiro": ["analista financeiro", "financial analyst", "financeiro"],
+            "contas a pagar": ["contas a pagar", "accounts payable", "pagar", "ap"],
+            "contas a receber": ["contas a receber", "accounts receivable", "receber", "ar"],
+            "analista de precificacao": ["precificação", "pricing", "preço"],
+            "custos": ["custos", "cost", "custo"]
+        }
+        
+        for job_type in job_types:
+            job_type_lower = job_type.lower()
+            if job_type_lower in relevance_keywords:
+                keywords = relevance_keywords[job_type_lower]
+                for keyword in keywords:
+                    if keyword in job_title_lower:
+                        return True
+                        
+        return False
+        
+    def apply_to_job(self, job_card, job_info):
+        """Aplica para uma vaga específica"""
+        try:
+            self.detailed_log(f"Tentando aplicar para: {job_info['title']}")
+            
+            # Procura botão de candidatura simplificada
+            easy_apply_selectors = [
+                ".jobs-apply-button--top-card",
+                ".job-search-card__easy-apply-button",
+                "button[aria-label*='Candidatura simplificada']",
+                ".jobs-search-results__list-item .jobs-apply-button"
+            ]
+            
+            easy_apply_button = None
+            for selector in easy_apply_selectors:
+                try:
+                    easy_apply_button = job_card.find_element(By.CSS_SELECTOR, selector)
+                    if easy_apply_button.is_displayed():
+                        break
+                except NoSuchElementException:
+                    continue
+                    
+            if not easy_apply_button:
+                self.detailed_log("Botão de candidatura simplificada não encontrado", "WARNING")
+                return False
+                
+            # Clica no botão de candidatura
+            self.detailed_log("Clicando em candidatura simplificada...")
+            easy_apply_button.click()
+            time.sleep(5)
+            
+            # Processa modal de candidatura
+            return self.process_application_modal(job_info)
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao aplicar para vaga: {str(e)}", "ERROR")
+            return False
+            
+    def process_application_modal(self, job_info):
+        """Processa o modal de candidatura com perguntas"""
+        try:
+            self.detailed_log("Processando modal de candidatura...")
+            
+            max_steps = 5
+            current_step = 0
+            
+            while current_step < max_steps:
+                current_step += 1
+                self.detailed_log(f"Processando etapa {current_step}/{max_steps}")
+                
+                # Responde perguntas se houver
+                if self.answer_application_questions():
+                    time.sleep(3)
+                
+                # Procura botão "Avançar" ou "Revisar"
+                next_button_selectors = [
+                    "button[aria-label*='Avançar']",
+                    "button[aria-label*='Revisar']",
+                    "button:contains('Avançar')",
+                    "button:contains('Revisar')"
+                ]
+                
+                next_button = None
+                for selector in next_button_selectors:
+                    try:
+                        if ":contains" in selector:
+                            text = selector.split(":contains('")[1].rstrip("')")
+                            next_button = self.driver.find_element(By.XPATH, f"//button[contains(text(), '{text}')]")
+                        else:
+                            next_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        break
+                    except NoSuchElementException:
+                        continue
+                        
+                if next_button:
+                    self.detailed_log("Clicando em 'Avançar'...")
+                    next_button.click()
+                    time.sleep(4)
+                else:
+                    # Procura botão "Enviar candidatura"
+                    submit_button_selectors = [
+                        "button[aria-label*='Enviar candidatura']",
+                        "button:contains('Enviar candidatura')",
+                        "button:contains('Enviar')"
+                    ]
+                    
+                    submit_button = None
+                    for selector in submit_button_selectors:
+                        try:
+                            if ":contains" in selector:
+                                text = selector.split(":contains('")[1].rstrip("')")
+                                submit_button = self.driver.find_element(By.XPATH, f"//button[contains(text(), '{text}')]")
+                            else:
+                                submit_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            break
+                        except NoSuchElementException:
+                            continue
+                            
+                    if submit_button:
+                        self.detailed_log("Enviando candidatura...")
+                        submit_button.click()
+                        time.sleep(5)
+                        
+                        # Verifica se candidatura foi enviada
+                        if self.verify_application_sent():
+                            return True
+                        else:
+                            return False
+                    else:
+                        self.detailed_log("Botão de envio não encontrado", "WARNING")
+                        return False
+                        
+            self.detailed_log("Máximo de etapas atingido", "WARNING")
+            return False
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao processar modal: {str(e)}", "ERROR")
+            return False
+            
+    def answer_application_questions(self):
+        """Responde perguntas do formulário de candidatura"""
+        try:
+            questions_answered = False
+            
+            # Procura por perguntas comuns
+            questions = self.driver.find_elements(By.CSS_SELECTOR, "label, .jobs-easy-apply-form-section__grouping")
+            
+            for question in questions:
+                question_text = question.text.lower()
+                
+                # Pergunta sobre PJ
+                if "pj" in question_text or "pessoa jurídica" in question_text:
+                    self.detailed_log("Respondendo pergunta sobre PJ...")
+                    self.answer_yes_no_question(question, True)
+                    questions_answered = True
+                    
+                # Pergunta sobre remuneração
+                elif "remuneração" in question_text or "salário" in question_text:
+                    self.detailed_log("Respondendo pergunta sobre remuneração...")
+                    self.answer_salary_question(question, "1900")
+                    questions_answered = True
+                    
+                # Pergunta sobre Excel
+                elif "excel" in question_text:
+                    self.detailed_log("Respondendo pergunta sobre Excel...")
+                    self.answer_skill_question(question, "8")
+                    questions_answered = True
+                    
+                # Pergunta sobre ERP
+                elif "erp" in question_text:
+                    self.detailed_log("Respondendo pergunta sobre ERP...")
+                    self.answer_skill_question(question, "9")
+                    questions_answered = True
+                    
+            return questions_answered
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao responder perguntas: {str(e)}", "WARNING")
+            return False
+            
+    def answer_yes_no_question(self, question_element, answer_yes=True):
+        """Responde pergunta sim/não"""
+        try:
+            parent = question_element.find_element(By.XPATH, "..")
+            
+            if answer_yes:
+                options = parent.find_elements(By.XPATH, ".//input[@value='sim' or @value='yes' or @value='true']")
+            else:
+                options = parent.find_elements(By.XPATH, ".//input[@value='não' or @value='no' or @value='false']")
+                
+            if options:
+                options[0].click()
+                time.sleep(2)
+                
+        except Exception as e:
+            self.detailed_log(f"Erro ao responder sim/não: {str(e)}", "WARNING")
+            
+    def answer_salary_question(self, question_element, salary):
+        """Responde pergunta sobre salário"""
+        try:
+            parent = question_element.find_element(By.XPATH, "..")
+            input_field = parent.find_element(By.CSS_SELECTOR, "input[type='text'], input[type='number']")
+            
+            self.human_type(input_field, salary)
+            time.sleep(2)
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao responder salário: {str(e)}", "WARNING")
+            
+    def answer_skill_question(self, question_element, score):
+        """Responde pergunta sobre habilidade (nota 0-10)"""
+        try:
+            parent = question_element.find_element(By.XPATH, "..")
+            
+            # Procura por input de número ou select
+            input_field = parent.find_element(By.CSS_SELECTOR, "input[type='number'], input[type='text'], select")
+            
+            if input_field.tag_name == "select":
+                # Se for select, procura pela opção
+                options = input_field.find_elements(By.CSS_SELECTOR, f"option[value='{score}']")
+                if options:
+                    options[0].click()
+            else:
+                # Se for input, digita o valor
+                self.human_type(input_field, score)
+                
+            time.sleep(2)
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao responder habilidade: {str(e)}", "WARNING")
+            
+    def verify_application_sent(self):
+        """Verifica se a candidatura foi enviada com sucesso"""
+        try:
+            # Procura por mensagem de confirmação
+            success_indicators = [
+                "candidatou-se",
+                "application sent",
+                "candidatura enviada",
+                "applied"
+            ]
+            
+            page_source = self.driver.page_source.lower()
+            
+            for indicator in success_indicators:
+                if indicator in page_source:
+                    self.detailed_log("Candidatura confirmada!", "SUCCESS")
+                    return True
+                    
+            # Aguarda um pouco e verifica novamente
+            time.sleep(3)
+            page_source = self.driver.page_source.lower()
+            
+            for indicator in success_indicators:
+                if indicator in page_source:
+                    self.detailed_log("Candidatura confirmada após aguardar!", "SUCCESS")
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.detailed_log(f"Erro ao verificar candidatura: {str(e)}", "WARNING")
+            return False
+            
+    def run_full_automation(self, username=None, password=None, job_types=None, max_applications=3):
+        """Executa automação completa com fluxo robusto"""
+        try:
+            self.detailed_log("=== INICIANDO AUTOMAÇÃO LINKEDIN ROBUSTA ===", "SUCCESS")
+            
+            # 1. Fluxo inteligente de login
+            if not self.smart_login_flow(username, password):
+                return {"success": False, "error": "Falha no processo de login"}
+                
+            # 2. Navegar para seção de vagas
+            if not self.navigate_to_jobs_section():
+                return {"success": False, "error": "Falha ao navegar para vagas"}
+                
+            # 3. Aplicar filtros
+            if not self.apply_filters():
+                return {"success": False, "error": "Falha ao aplicar filtros"}
+                
+            # 4. Buscar e aplicar para vagas
+            if not job_types:
+                job_types = ["analista financeiro"]
+                
+            results = self.search_and_apply_jobs(job_types, max_applications)
+            
+            return results
+            
+        except Exception as e:
+            self.detailed_log(f"Erro na automação completa: {str(e)}", "ERROR")
+            return {"success": False, "error": str(e)}
+            
+    def close(self):
+        """Fecha o navegador"""
+        try:
+            if self.driver:
+                self.driver.quit()
+                self.detailed_log("Navegador fechado")
+        except Exception as e:
+            self.detailed_log(f"Erro ao fechar navegador: {str(e)}", "WARNING")
+

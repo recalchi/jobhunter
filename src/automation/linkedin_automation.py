@@ -57,7 +57,7 @@ class LinkedInAutomation(BaseAutomation):
                 self.safe_sleep(3)
 
                 # Remove aspas do job_type
-                clean_job_type = job_type.replace("\'", "").replace('"', "")
+                clean_job_type = job_type.replace("\\'", "").replace("\"", "")
 
                 # Preenche o campo de busca de vagas
                 search_field_selectors = [
@@ -125,9 +125,11 @@ class LinkedInAutomation(BaseAutomation):
                     (By.XPATH, "//button[@type='submit']", "Botão de busca por tipo submit"),
                     (By.XPATH, "//button[contains(@aria-label, 'Pesquisar')]", "Botão de busca por aria-label (PT)"),
                     (By.XPATH, "//button[contains(@aria-label, 'Search')]", "Botão de busca por aria-label (EN)"),
-                    (By.CSS_SELECTOR, "button[data-test-search-button]", "Botão de busca por data-test")
+                    (By.CSS_SELECTOR, "button[data-test-search-button]", "Botão de busca por data-test"),
+                    (By.XPATH, "//button[contains(@class, 'search-button')]", "Botão de busca genérico por classe")
                 ]
                 search_button = None
+                button_clicked = False
                 for by_type, selector, description in search_button_selectors:
                     try:
                         self.logger.info(f"Tentando clicar no botão de busca: {description} ({selector})")
@@ -138,12 +140,20 @@ class LinkedInAutomation(BaseAutomation):
                             search_button.click()
                             self.safe_sleep(3)
                             self.logger.info(f"Botão de busca clicado com sucesso usando: {description}")
+                            button_clicked = True
                             break
                     except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
                         self.logger.warning(f"Não foi possível clicar no botão de busca ({description}): {e}")
                         continue
+                
+                if not button_clicked and search_button:
+                    self.logger.warning("Tentando clicar no botão de busca via JavaScript como fallback.")
+                    self.driver.execute_script("arguments[0].click();", search_button)
+                    self.safe_sleep(3)
+                    self.logger.info("Botão de busca clicado com sucesso via JavaScript.")
+                    button_clicked = True
 
-                if not search_button:
+                if not button_clicked:
                     self.logger.error("Não foi possível clicar no botão de busca após todas as tentativas.")
                     continue
 

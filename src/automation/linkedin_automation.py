@@ -26,7 +26,7 @@ class LinkedInAutomation(BaseAutomation):
                 return False
                 
             # Clica no botão de login
-            if not self.wait_and_click(By.XPATH, "//button[@type='submit']"):
+            if not self.wait_and_click(By.XPATH, "//button[@type=\'submit\']"):
                 return False
                 
             self.safe_sleep(3)
@@ -56,14 +56,14 @@ class LinkedInAutomation(BaseAutomation):
                 self.safe_sleep(3)
 
                 # Remove aspas do job_type
-                clean_job_type = job_type.replace("\"", "").replace("\"", "")
+                clean_job_type = job_type.replace("'", "").replace('"', "")
 
                 # Preenche o campo de busca de vagas
                 search_field_selectors = [
-                    "//input[contains(@id, 'jobs-search-box-keyword-id')]",
-                    "//input[contains(@aria-label, 'Search by title')]",
-                    "//input[contains(@placeholder, 'Pesquisar por título, palavra-chave ou empresa')]",
-                    "//input[contains(@placeholder, 'Pesquisar')]" 
+                    "//input[contains(@id, \'jobs-search-box-keyword-id\')]",
+                    "//input[contains(@aria-label, \'Search by title\')]",
+                    "//input[contains(@placeholder, \'Pesquisar por título, palavra-chave ou empresa\')]",
+                    "//input[contains(@placeholder, \'Pesquisar\')]" 
                 ]
                 search_field = None
                 for selector in search_field_selectors:
@@ -83,9 +83,9 @@ class LinkedInAutomation(BaseAutomation):
 
                 # Preenche o campo de localização
                 location_field_selectors = [
-                    "//input[contains(@id, 'jobs-search-box-location-id')]",
-                    "//input[contains(@aria-label, 'Search by location')]",
-                    "//input[contains(@placeholder, 'Localização')]"
+                    "//input[contains(@id, \'jobs-search-box-location-id\')]",
+                    "//input[contains(@aria-label, \'Search by location\')]",
+                    "//input[contains(@placeholder, \'Localização\')]"
                 ]
                 location_field = None
                 for selector in location_field_selectors:
@@ -105,9 +105,9 @@ class LinkedInAutomation(BaseAutomation):
 
                 # Clica no botão de busca
                 search_button_selectors = [
-                    "//button[contains(@class, 'jobs-search-box__submit-button')]",
-                    "//button[@type='submit']",
-                    "//button[contains(@aria-label, 'Pesquisar')]" 
+                    "//button[contains(@class, \'jobs-search-box__submit-button\')]",
+                    "//button[@type=\'submit\']",
+                    "//button[contains(@aria-label, \'Pesquisar\')]" 
                 ]
                 search_button = None
                 for selector in search_button_selectors:
@@ -127,13 +127,13 @@ class LinkedInAutomation(BaseAutomation):
                 # Aguarda a página carregar
                 self.safe_sleep(3)
 
-                # Tenta clicar no botão 'Todos os filtros' com múltiplos seletores
+                # Tenta clicar no botão \'Todos os filtros\' com múltiplos seletores
                 all_filters_clicked = False
                 filter_selectors = [
-                    "//button[contains(text(), 'Todos os filtros')]",
-                    "//button[contains(text(), 'All filters')]",
-                    "//button[contains(@aria-label, 'filtros')]",
-                    "//button[contains(@class, 'search-reusables__all-filters-pill-button')]" 
+                    "//button[contains(text(), \'Todos os filtros\')]",
+                    "//button[contains(text(), \'All filters\')]",
+                    "//button[contains(@aria-label, \'filtros\')]",
+                    "//button[contains(@class, \'search-reusables__all-filters-pill-button\')]" 
                 ]
                 
                 for selector in filter_selectors:
@@ -143,56 +143,56 @@ class LinkedInAutomation(BaseAutomation):
                             filter_button.click()
                             self.safe_sleep(2)
                             all_filters_clicked = True
-                            self.logger.info("Clicou em 'Todos os filtros'")
+                            self.logger.info("Clicou em \'Todos os filtros\'")
                             break
                     except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
                         self.logger.warning(f"Erro ao clicar no filtro {selector}: {e}")
                         continue
 
                 if not all_filters_clicked:
-                    self.logger.error("Não foi possível clicar no botão 'Todos os filtros'.")
+                    self.logger.error("Não foi possível clicar no botão \'Todos os filtros\'.")
                     continue
 
-                # Ativa o filtro 'Candidatura simplificada'
+                # Ativa o filtro \'Candidatura simplificada\'
                 easy_apply_activated = False
                 easy_apply_selectors = [
-                    "//label[contains(text(), 'Candidatura simplificada')]",
-                    "//label[contains(text(), 'Easy Apply')]",
-                    "//input[@id='f_LF-f_AL']",
-                    "//span[contains(text(), 'Candidatura simplificada')]/preceding-sibling::input",
-                    "//span[contains(text(), 'Easy Apply')]/preceding-sibling::input",
-                    "//input[@type='checkbox' and @id='f_LF-f_AL']", # Adicionado seletor mais específico
-                    "//input[@type='checkbox' and contains(@aria-label, 'Candidatura simplificada')]" 
+                    "//label[contains(text(), \'Candidatura simplificada\')]",
+                    "//label[contains(text(), \'Easy Apply\')]",
+                    "//input[@id=\'f_LF-f_AL\']",
+                    "//span[contains(text(), \'Candidatura simplificada\')]/preceding-sibling::input",
+                    "//span[contains(text(), \'Easy Apply\')]/preceding-sibling::input",
+                    "//input[@type=\'checkbox\' and @id=\'f_LF-f_AL\']", # Adicionado seletor mais específico
+                    "//input[@type=\'checkbox\' and contains(@aria-label, \'Candidatura simplificada\')]" 
                 ]
                 
                 for selector in easy_apply_selectors:
                     try:
                         easy_apply_element = self.wait_for_element(By.XPATH, selector, timeout=5)
                         if easy_apply_element:
-                            if easy_apply_element.tag_name == 'input' and easy_apply_element.get_attribute('type') == 'checkbox':
+                            if easy_apply_element.tag_name == \'input\' and easy_apply_element.get_attribute(\'type\') == \'checkbox\':
                                 if not easy_apply_element.is_selected():
                                     easy_apply_element.click()
                             else:
                                 easy_apply_element.click()
                             self.safe_sleep(1)
                             easy_apply_activated = True
-                            self.logger.info("Ativou filtro 'Candidatura simplificada'")
+                            self.logger.info("Ativou filtro \'Candidatura simplificada\'")
                             break
                     except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
                         self.logger.warning(f"Erro ao ativar candidatura simplificada com seletor {selector}: {e}")
                         continue
 
                 if not easy_apply_activated:
-                    self.logger.error("Não foi possível ativar o filtro 'Candidatura simplificada'.")
+                    self.logger.error("Não foi possível ativar o filtro \'Candidatura simplificada\'.")
                     continue
 
-                # Clica no botão 'Exibir resultados'
+                # Clica no botão \'Exibir resultados\'
                 results_shown = False
                 show_results_selectors = [
-                    "//button[contains(text(), 'Exibir resultados')]",
-                    "//button[contains(text(), 'Show results')]",
-                    "//button[contains(text(), 'Mostrar resultados')]",
-                    "//button[contains(@class, 'search-reusables__secondary-filters-show-results-button')]" 
+                    "//button[contains(text(), \'Exibir resultados\')]",
+                    "//button[contains(text(), \'Show results\')]",
+                    "//button[contains(text(), \'Mostrar resultados\')]",
+                    "//button[contains(@class, \'search-reusables__secondary-filters-show-results-button\')]" 
                 ]
                 
                 for selector in show_results_selectors:
@@ -202,14 +202,14 @@ class LinkedInAutomation(BaseAutomation):
                             show_button.click()
                             self.safe_sleep(3)
                             results_shown = True
-                            self.logger.info("Clicou em 'Exibir resultados'")
+                            self.logger.info("Clicou em \'Exibir resultados\'")
                             break
                     except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
                         self.logger.warning(f"Erro ao exibir resultados com seletor {selector}: {e}")
                         continue
 
                 if not results_shown:
-                    self.logger.error("Não foi possível clicar no botão 'Exibir resultados'.")
+                    self.logger.error("Não foi possível clicar no botão \'Exibir resultados\'.")
                     continue
 
                 # Aguarda os resultados carregarem
@@ -245,7 +245,7 @@ class LinkedInAutomation(BaseAutomation):
             job_card_selectors = [
                 ".job-search-card",
                 ".jobs-search-results__list-item",
-                "[data-entity-urn*='job']",
+                "[data-entity-urn*=\'job\']",
                 ".scaffold-layout__list-item"
             ]
             
@@ -323,30 +323,30 @@ class LinkedInAutomation(BaseAutomation):
                     for selector in link_selectors:
                         try:
                             link_element = card.find_element(By.CSS_SELECTOR, selector)
-                            if link_element.get_attribute('href'):
+                            if link_element.get_attribute(\'href\'):
                                 break
                         except NoSuchElementException:
                             continue
                     
                     if title_element and link_element:
                         job_data = {
-                            'title': title_element.text.strip(),
-                            'company': company_element.text.strip() if company_element else 'N/A',
-                            'location': location_element.text.strip() if location_element else 'N/A',
-                            'url': link_element.get_attribute('href'),
-                            'platform': 'LinkedIn',
-                            'job_id': self._extract_job_id_from_url(link_element.get_attribute('href'))
+                            \'title\': title_element.text.strip(),
+                            \'company\': company_element.text.strip() if company_element else \'N/A\',
+                            \'location\': location_element.text.strip() if location_element else \'N/A\',
+                            \'url\': link_element.get_attribute(\'href\'),
+                            \'platform\': \'LinkedIn\',
+                            \'job_id\': self._extract_job_id_from_url(link_element.get_attribute(\'href\'))
                         }
                         
                         # Tenta extrair informações adicionais
                         try:
                             salary_element = card.find_element(By.CSS_SELECTOR, ".job-search-card__salary-info")
-                            job_data['salary_range'] = salary_element.text.strip()
+                            job_data[\'salary_range\'] = salary_element.text.strip()
                         except NoSuchElementException:
-                            job_data['salary_range'] = None
+                            job_data[\'salary_range\'] = None
                             
                         jobs.append(job_data)
-                        self.logger.info(f"Vaga extraída: {job_data['title']} - {job_data['company']}")
+                        self.logger.info(f"Vaga extraída: {job_data[\'title\']} - {job_data[\'company\']}")
                     
                 except Exception as e:
                     self.logger.warning(f"Erro ao extrair dados de uma vaga: {str(e)}")
@@ -363,7 +363,7 @@ class LinkedInAutomation(BaseAutomation):
             # LinkedIn job URLs geralmente têm o formato: .../jobs/view/123456789/
             parts = url.split('/')
             for i, part in enumerate(parts):
-                if part == 'view' and i + 1 < len(parts):
+                if part == \'view\' and i + 1 < len(parts):
                     return parts[i + 1]
             return url.split('/')[-2] if url.endswith('/') else url.split('/')[-1]
         except:
@@ -374,10 +374,10 @@ class LinkedInAutomation(BaseAutomation):
         try:
             # Múltiplos seletores para botão próxima página
             next_selectors = [
-                "button[aria-label*='next']",
-                "button[aria-label*='próxima']",
+                "button[aria-label*=\'next\']",
+                "button[aria-label*=\'próxima\']",
                 ".artdeco-pagination__button--next",
-                "button[data-test-pagination-page-btn='next']"
+                "button[data-test-pagination-page-btn=\'next\']"
             ]
             
             for selector in next_selectors:
@@ -402,11 +402,11 @@ class LinkedInAutomation(BaseAutomation):
             
             # Múltiplos seletores para botão Easy Apply
             easy_apply_selectors = [
-                "//button[contains(@class, 'jobs-apply-button') and contains(text(), 'Easy Apply')]",
-                "//button[contains(text(), 'Candidatar-se')]",
-                "//button[contains(text(), 'Candidatura simplificada')]",
-                "//button[contains(@class, 'jobs-s-apply') and contains(@class, 'jobs-s-apply--fadein')]",
-                "//button[contains(@aria-label, 'Easy Apply')]" 
+                "//button[contains(@class, \'jobs-apply-button\') and contains(text(), \'Easy Apply\')]",
+                "//button[contains(text(), \'Candidatar-se\')]",
+                "//button[contains(text(), \'Candidatura simplificada\')]",
+                "//button[contains(@class, \'jobs-s-apply\') and contains(@class, \'jobs-s-apply--fadein\')]",
+                "//button[contains(@aria-label, \'Easy Apply\')]" 
             ]
             
             easy_apply_button = None
@@ -443,10 +443,10 @@ class LinkedInAutomation(BaseAutomation):
                 
                 # Verifica se a aplicação foi concluída
                 success_indicators = [
-                    "//h3[contains(text(), 'Sua inscrição foi enviada')]",
-                    "//h3[contains(text(), 'Application sent')]",
-                    "//div[contains(text(), 'Sua candidatura foi enviada')]",
-                    "//div[contains(@class, 'jobs-apply-success')]" 
+                    "//h3[contains(text(), \'Sua inscrição foi enviada\')]",
+                    "//h3[contains(text(), \'Application sent\')]",
+                    "//div[contains(text(), \'Sua candidatura foi enviada\')]",
+                    "//div[contains(@class, \'jobs-apply-success\')]" 
                 ]
                 
                 for indicator in success_indicators:
@@ -455,38 +455,38 @@ class LinkedInAutomation(BaseAutomation):
                         return True
                 
                 # Responder perguntas de sim/não (sempre sim)
-                yes_buttons = self.driver.find_elements(By.XPATH, "//input[@type='radio' and (contains(@value, 'Yes') or contains(@value, 'Sim') or contains(@id, 'yes'))]")
+                yes_buttons = self.driver.find_elements(By.XPATH, "//input[@type=\'radio\' and (contains(@value, \'Yes\') or contains(@value, \'Sim\') or contains(@id, \'yes\'))]")
                 for button in yes_buttons:
                     try:
                         if not button.is_selected():
                             button.click()
                             self.safe_sleep(0.5)
                     except Exception as e:
-                        self.logger.warning(f"Não foi possível clicar no botão 'sim': {e}")
+                        self.logger.warning(f"Não foi possível clicar no botão \'sim\': {e}")
 
                 # Preencher campos de salário
                 salary_selectors = [
-                    "//input[contains(@id, 'currency') or contains(@id, 'salary') or contains(@placeholder, 'salário')]",
-                    "//input[@type='number']",
-                    "//input[contains(@aria-label, 'salary')]" 
+                    "//input[contains(@id, \'currency\') or contains(@id, \'salary\') or contains(@placeholder, \'salário\')]",
+                    "//input[@type=\'number\']",
+                    "//input[contains(@aria-label, \'salary\')]" 
                 ]
                 
                 for selector in salary_selectors:
                     salary_inputs = self.driver.find_elements(By.XPATH, selector)
                     for input_field in salary_inputs:
                         try:
-                            if not input_field.get_attribute('value'):
+                            if not input_field.get_attribute(\'value\'):
                                 input_field.clear()
-                                input_field.send_keys('1900')
+                                input_field.send_keys(\'1900\')
                                 self.safe_sleep(0.5)
                         except Exception as e:
                             self.logger.warning(f"Não foi possível preencher o campo de salário: {e}")
 
                 # Preencher campos de texto obrigatórios
-                text_inputs = self.driver.find_elements(By.XPATH, "//input[@type='text' and @required]")
+                text_inputs = self.driver.find_elements(By.XPATH, "//input[@type=\'text\' and @required]")
                 for input_field in text_inputs:
                     try:
-                        if not input_field.get_attribute('value'):
+                        if not input_field.get_attribute(\'value\'):
                             input_field.send_keys("Sim")
                             self.safe_sleep(0.5)
                     except Exception as e:
@@ -494,10 +494,10 @@ class LinkedInAutomation(BaseAutomation):
 
                 # Procurar botões de ação (em ordem de prioridade)
                 action_buttons = [
-                    ("//button[contains(text(), 'Enviar inscrição') or contains(text(), 'Submit application')]", "Enviar"),
-                    ("//button[contains(text(), 'Revisar') or contains(text(), 'Review')]", "Revisar"),
-                    ("//button[contains(text(), 'Avançar') or contains(text(), 'Next')]", "Avançar"),
-                    ("//button[contains(text(), 'Continuar') or contains(text(), 'Continue')]", "Continuar")
+                    ("//button[contains(text(), \'Enviar inscrição\') or contains(text(), \'Submit application\')]", "Enviar"),
+                    ("//button[contains(text(), \'Revisar\') or contains(text(), \'Review\')]", "Revisar"),
+                    ("//button[contains(text(), \'Avançar\') or contains(text(), \'Next\')]", "Avançar"),
+                    ("//button[contains(text(), \'Continuar\') or contains(text(), \'Continue\')]", "Continuar")
                 ]
                 
                 button_clicked = False

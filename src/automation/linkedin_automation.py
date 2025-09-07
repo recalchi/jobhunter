@@ -56,7 +56,7 @@ class LinkedInAutomation(BaseAutomation):
                 self.safe_sleep(3)
 
                 # Remove aspas do job_type
-                clean_job_type = job_type.replace("\'", "").replace(\'"\', "")
+                clean_job_type = job_type.replace("'", "").replace('"', "")
 
                 # Preenche o campo de busca de vagas
                 search_field_selectors = [

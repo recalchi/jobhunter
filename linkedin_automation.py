@@ -96,10 +96,10 @@ class LinkedInAutomation(BaseAutomation):
                         location_input.clear()
                         location_input.send_keys(location)
                         self.safe_sleep(2)
-                        # Clica na primeira sugestão de localidade
-                        self.logger.debug("Procurando sugestão de localidade...")
-                        self.wait_and_click(By.XPATH, "//li[contains(@data-test-type, 'SEARCH_TYPE_PLACE')]", timeout=15)
-                        self.logger.info(f"Localidade '{location}' aplicada com sucesso.")
+                        # Adiciona um ENTER para confirmar a seleção ou fechar a listagem
+                        location_input.send_keys(u'\ue007') # Unicode para ENTER
+                        self.safe_sleep(2)
+                        self.logger.info(f"Localidade '{location}' aplicada com sucesso (ENTER pressionado).")
                     else:
                         self.logger.warning("Campo de localidade não encontrado. Pulando aplicação de localidade.")
 

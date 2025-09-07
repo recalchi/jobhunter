@@ -33,7 +33,6 @@ class BaseAutomation:
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         
         chrome_options.binary_location = "/usr/bin/google-chrome-stable"
-        # chrome_options.binary_location = "/usr/bin/google-chrome-stable"
         chrome_options.add_argument("--no-first-run")
         chrome_options.add_argument("--no-default-browser-check")
         chrome_options.add_argument("--remote-debugging-port=9222")
@@ -41,7 +40,7 @@ class BaseAutomation:
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
 
-        # Remove the user-data-dir argument if it's causing issues
+        # Remove the user-data-dir argument if it\"s causing issues
         # chrome_options.add_argument("--user-data-dir=/tmp/chrome_profile")
         self.wait = WebDriverWait(self.driver, 10)
         
@@ -100,4 +99,5 @@ class BaseAutomation:
         """Rola até um elemento específico"""
         self.driver.execute_script("arguments[0].scrollIntoView();", element)
         self.safe_sleep(1)
+
 

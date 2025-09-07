@@ -2,6 +2,7 @@ import time
 import json
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from src.automation.base_automation import BaseAutomation
 
@@ -26,7 +27,7 @@ class LinkedInAutomation(BaseAutomation):
                 return False
                 
             # Clica no botão de login
-            if not self.wait_and_click(By.XPATH, "//button[@type='submit']"):
+            if not self.wait_and_click(By.XPATH, "//button[@type=\'submit\']"):
                 return False
                 
             self.safe_sleep(3)
@@ -65,6 +66,21 @@ class LinkedInAutomation(BaseAutomation):
                 search_url = f"{self.jobs_url}?{params_str}"
                 
                 self.driver.get(search_url)
+                
+                # Adiciona espera explícita para o carregamento da página
+                try:
+                    WebDriverWait(self.driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".job-search-card"))
+                    )
+                    self.logger.info("Página de busca de vagas carregada com sucesso.")
+                except TimeoutException:
+                    self.logger.warning("Timeout ao carregar a página de busca de vagas. Tentando novamente...")
+                    self.driver.get(search_url) # Tenta novamente
+                    WebDriverWait(self.driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".job-search-card"))
+                    )
+                    self.logger.info("Página de busca de vagas carregada com sucesso após retry.")
+
                 self.safe_sleep(3)
                 
                 # Busca as vagas na página
@@ -184,31 +200,62 @@ class LinkedInAutomation(BaseAutomation):
         try:
             # Aguarda o modal aparecer
             self.safe_sleep(2)
-            
-            # Verifica se há upload de currículo
-            if resume_path:
-                file_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                if file_inputs:
-                    file_inputs[0].send_keys(resume_path)
+
+            # Clica no botão "Avançar" para pular a seleção de currículo
+            if not self.wait_and_click(By.XPATH, "//button[contains(text(), 'Avançar')]"):
+                self.logger.warning("Botão 'Avançar' não encontrado, seguindo para a próxima etapa.")
+
+            # Loop para responder a todas as perguntas da vaga
+            while True:
+                # Responde a perguntas de múltipla escolha
+                selects = self.driver.find_elements(By.CSS_SELECTOR, "select")
+                for select in selects:
+                    try:
+                        # Clica no select para abrir as opções
+                        select.click()
+                        self.safe_sleep(1)
+                        # Seleciona a opção "Sim" ou "Yes"
+                        option_to_select = select.find_element(By.XPATH, ".//option[contains(text(), 'Sim') or contains(text(), 'Yes')]")
+                        option_to_select.click()
+                        self.safe_sleep(1)
+                    except NoSuchElementException:
+                        continue
+
+                # Responde a perguntas de texto
+                text_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='text']")
+                for text_input in text_inputs:
+                    try:
+                        # Preenche o campo com um valor padrão
+                        text_input.send_keys("1900")
+                        self.safe_sleep(1)
+                    except Exception as e:
+                        self.logger.warning(f"Não foi possível preencher o campo de texto: {e}")
+                        continue
+
+                # Clica no botão "Revisar"
+                if self.wait_and_click(By.XPATH, "//button[contains(text(), 'Revisar')]"):
+                    self.logger.info("Indo para a tela de revisão.")
                     self.safe_sleep(2)
-            
-            # Procura pelo botão de enviar aplicação
-            submit_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Submit') or contains(text(), 'Enviar') or contains(text(), 'Send')]")
-            
-            if submit_buttons:
-                submit_buttons[0].click()
+                    break
+                else:
+                    # Se não houver mais perguntas, sai do loop
+                    break
+
+            # Clica no botão "Enviar candidatura"
+            if self.wait_and_click(By.XPATH, "//button[contains(text(), 'Enviar candidatura')]"):
+                self.logger.info("Candidatura enviada com sucesso!")
                 self.safe_sleep(3)
-                self.logger.info("Aplicação enviada com sucesso!")
+
+                # Fecha o modal de confirmação
+                self.wait_and_click(By.XPATH, "//button[contains(text(), 'Concluído')]")
                 return True
             else:
-                # Se não encontrou botão de enviar, pode ser um processo multi-etapas
-                next_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Next') or contains(text(), 'Próximo')]")
-                if next_buttons:
-                    self.logger.info("Processo de aplicação requer etapas adicionais")
-                    return False
-                    
+                self.logger.error("Não foi possível enviar a candidatura.")
+                return False
+
         except Exception as e:
             self.logger.error(f"Erro no modal de aplicação: {str(e)}")
-            
-        return False
+            return False
+
+
 

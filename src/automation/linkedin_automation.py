@@ -56,7 +56,7 @@ class LinkedInAutomation(BaseAutomation):
                 self.safe_sleep(3)
 
                 # Remove aspas do job_type
-                clean_job_type = job_type.replace("'", "").replace('"', "")
+                clean_job_type = job_type.replace("\"", "").replace("\"", "")
 
                 # Preenche o campo de busca de vagas
                 search_field_selectors = [
@@ -68,7 +68,7 @@ class LinkedInAutomation(BaseAutomation):
                 search_field = None
                 for selector in search_field_selectors:
                     try:
-                        search_field = self.wait_for_element(By.XPATH, selector, timeout=5)
+                        search_field = self.wait_for_element(By.XPATH, selector, timeout=10) # Aumentado timeout
                         if search_field:
                             search_field.clear()
                             search_field.send_keys(clean_job_type)

@@ -67,6 +67,14 @@ class LinkedInAutomation(BaseAutomation):
                 
                 self.driver.get(search_url)
                 self.safe_sleep(3)
+                # Clica no botão de busca para aplicar os filtros
+                try:
+                    search_button = self.wait_for_element(By.XPATH, "//button[contains(@aria-label, 'Search') or contains(text(), 'Search')]")
+                    if search_button:
+                        search_button.click()
+                        self.safe_sleep(2)
+                except Exception as e:
+                    self.logger.warning(f"Não foi possível clicar no botão de busca após aplicar os filtros: {e}")
                 
                 # Busca as vagas na página
                 page_jobs = self._extract_jobs_from_page()

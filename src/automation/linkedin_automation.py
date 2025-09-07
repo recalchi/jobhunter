@@ -55,26 +55,52 @@ class LinkedInAutomation(BaseAutomation):
                 search_params = {
                     'keywords': job_type,
                     'location': location,
-                    'f_SB2': str(salary_min),  # Salário mínimo
-                    'f_TPR': 'r86400',  # Últimas 24 horas
-                    'f_E': '2',  # Nível de experiência
-                    'f_LF': 'f_AL' # Apenas candidaturas simplificadas (Easy Apply)
+                    'f_SB2': str(salary_min),
+                    'f_TPR': 'r86400',
+                    'f_E': '2',
+                    'f_LF': 'f_AL'
                 }
-                
-                # Constrói a URL
-                params_str = '&'.join([f"{k}={v}" for k, v in search_params.items()])
-                search_url = f"{self.jobs_url}?{params_str}"
-                
-                self.driver.get(search_url)
+                self.driver.get(self.jobs_url)
                 self.safe_sleep(3)
-                # Clica no botão de busca para aplicar os filtros
-                try:
-                    search_button = self.wait_for_element(By.XPATH, "//button[contains(@aria-label, 'Search') or contains(text(), 'Search')]")
-                    if search_button:
-                        search_button.click()
-                        self.safe_sleep(2)
-                except Exception as e:
-                    self.logger.warning(f"Não foi possível clicar no botão de busca após aplicar os filtros: {e}")
+
+                # Preenche o campo de busca de vagas
+                if not self.wait_and_send_keys(By.XPATH, "//input[contains(@id, 'jobs-search-box-keyword-id') or contains(@aria-label, 'Search by title') ]", job_type.replace("'", "")):
+                    self.logger.error("Não foi possível encontrar o campo de busca de vagas.")
+                    continue
+
+                # Preenche o campo de localização
+                if not self.wait_and_send_keys(By.XPATH, "//input[contains(@id, 'jobs-search-box-location-id') or contains(@aria-label, 'Search by location') ]", location):
+                    self.logger.error("Não foi possível encontrar o campo de busca de localização.")
+                    continue
+
+                # Clica no botão de busca
+                if not self.wait_and_click(By.XPATH, "//button[contains(@class, 'jobs-search-box__submit-button') or @type='submit']"):
+                    self.logger.error("Não foi possível clicar no botão de busca.")
+                    continue
+
+                self.safe_sleep(3)
+
+                # Clica no botão 'Todos os filtros'
+                if not self.wait_and_click(By.XPATH, "//button[contains(text(), 'Todos os filtros')]"):
+                    self.logger.error("Não foi possível clicar no botão 'Todos os filtros'.")
+                    continue
+
+                self.safe_sleep(2)
+
+                # Ativa o filtro 'Candidatura simplificada'
+                if not self.wait_and_click(By.XPATH, "//label[contains(text(), 'Candidatura simplificada')]"):
+                    self.logger.error("Não foi possível ativar o filtro 'Candidatura simplificada'.")
+                    continue
+
+                self.safe_sleep(2)
+
+                # Clica no botão 'Exibir resultados'
+                if not self.wait_and_click(By.XPATH, "//button[contains(text(), 'Exibir resultados')]"):
+                    self.logger.error("Não foi possível clicar no botão 'Exibir resultados'.")
+                    continue
+
+                self.safe_sleep(3)
+
                 
                 # Busca as vagas na página
                 page_jobs = self._extract_jobs_from_page()

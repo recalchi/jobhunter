@@ -69,6 +69,7 @@ class LinkedInAutomation(BaseAutomation):
                 
                 # Adiciona espera explícita para o carregamento da página
                 try:
+                    self.logger.info("Aguardando o carregamento da página de busca de vagas...")
                     WebDriverWait(self.driver, 30).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, ".job-search-card"))
                     )
@@ -85,39 +86,53 @@ class LinkedInAutomation(BaseAutomation):
                 
                 # Tenta aplicar filtros de localidade e outros, se necessário
                 try:
+                    self.logger.info("Iniciando aplicação de filtros de localidade e candidatura simplificada...")
                     # Clica no campo de localidade e digita a localização
-                    location_input = self.wait_for_element(By.XPATH, "//input[contains(@aria-label, 'Localidade')]", timeout=10)
+                    self.logger.debug("Procurando campo de localidade...")
+                    location_input = self.wait_for_element(By.XPATH, "//input[contains(@aria-label, 'Localidade')]", timeout=15)
                     if location_input:
+                        self.logger.debug(f"Campo de localidade encontrado. Limpando e enviando texto: {location}")
                         location_input.clear()
                         location_input.send_keys(location)
                         self.safe_sleep(2)
                         # Clica na primeira sugestão de localidade
-                        self.wait_and_click(By.XPATH, "//li[contains(@data-test-type, 'SEARCH_TYPE_PLACE')]", timeout=10)
+                        self.logger.debug("Procurando sugestão de localidade...")
+                        self.wait_and_click(By.XPATH, "//li[contains(@data-test-type, 'SEARCH_TYPE_PLACE')]", timeout=15)
                         self.logger.info(f"Localidade '{location}' aplicada com sucesso.")
                     else:
-                        self.logger.warning("Campo de localidade não encontrado.")
+                        self.logger.warning("Campo de localidade não encontrado. Pulando aplicação de localidade.")
 
                     # Clica no botão 'Todos os filtros'
-                    self.wait_and_click(By.XPATH, "//button[contains(text(), 'Todos os filtros')]", timeout=10)
+                    self.logger.debug("Procurando botão 'Todos os filtros'...")
+                    self.wait_and_click(By.XPATH, "//button[contains(text(), 'Todos os filtros')]", timeout=15)
                     self.safe_sleep(2)
 
                     # Ativa o filtro de 'Candidatura simplificada'
-                    easy_apply_toggle = self.wait_for_element(By.XPATH, "//span[text()='Candidatura simplificada']/following-sibling::button", timeout=10)
-                    if easy_apply_toggle and easy_apply_toggle.get_attribute("aria-checked") == "false":
-                        easy_apply_toggle.click()
-                        self.logger.info("Filtro 'Candidatura simplificada' ativado.")
-                        self.safe_sleep(2)
+                    self.logger.debug("Procurando toggle de 'Candidatura simplificada'...")
+                    easy_apply_toggle = self.wait_for_element(By.XPATH, "//span[text()='Candidatura simplificada']/following-sibling::button", timeout=15)
+                    if easy_apply_toggle:
+                        self.logger.debug(f"Toggle de 'Candidatura simplificada' encontrado. Status: {easy_apply_toggle.get_attribute('aria-checked')}")
+                        if easy_apply_toggle.get_attribute("aria-checked") == "false":
+                            easy_apply_toggle.click()
+                            self.logger.info("Filtro 'Candidatura simplificada' ativado.")
+                            self.safe_sleep(2)
+                        else:
+                            self.logger.info("Filtro 'Candidatura simplificada' já está ativado.")
+                    else:
+                        self.logger.warning("Toggle de 'Candidatura simplificada' não encontrado.")
 
                     # Clica em 'Exibir resultados'
-                    self.wait_and_click(By.XPATH, "//button[contains(text(), 'Exibir resultados')]", timeout=10)
+                    self.logger.debug("Procurando botão 'Exibir resultados'...")
+                    self.wait_and_click(By.XPATH, "//button[contains(text(), 'Exibir resultados')]", timeout=15)
                     self.safe_sleep(5) # Espera mais tempo para os resultados carregarem
+                    self.logger.info("Filtros aplicados e resultados exibidos.")
 
                 except TimeoutException as te:
-                    self.logger.error(f"Timeout ao aplicar filtros: {str(te)}")
+                    self.logger.error(f"❌ Erro de Timeout ao aplicar filtros: {str(te)}")
                 except NoSuchElementException as nse:
-                    self.logger.error(f"Elemento não encontrado ao aplicar filtros: {str(nse)}")
+                    self.logger.error(f"❌ Elemento não encontrado ao aplicar filtros: {str(nse)}")
                 except Exception as ex:
-                    self.logger.error(f"Erro inesperado ao aplicar filtros: {str(ex)}")
+                    self.logger.error(f"❌ Erro inesperado ao aplicar filtros: {str(ex)}")
 
                 # Busca as vagas na página
                 page_jobs = self._extract_jobs_from_page()

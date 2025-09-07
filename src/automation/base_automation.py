@@ -7,7 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
+# from webdriver_manager.chrome import ChromeDriverManager # Removido
 
 class BaseAutomation:
     def __init__(self, headless=True):
@@ -37,7 +37,8 @@ class BaseAutomation:
         chrome_options.add_argument("--no-default-browser-check")
         chrome_options.add_argument("--remote-debugging-port=9222")
 
-        service = Service(ChromeDriverManager().install())
+        # Usar o ChromeDriver baixado manualmente
+        service = Service("./chromedriver-linux64/chromedriver")
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
 
         # Remove the user-data-dir argument if it\"s causing issues
@@ -99,5 +100,6 @@ class BaseAutomation:
         """Rola até um elemento específico"""
         self.driver.execute_script("arguments[0].scrollIntoView();", element)
         self.safe_sleep(1)
+
 
 

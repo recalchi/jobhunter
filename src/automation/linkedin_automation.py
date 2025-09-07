@@ -57,7 +57,8 @@ class LinkedInAutomation(BaseAutomation):
                     'location': location,
                     'f_SB2': str(salary_min),  # Salário mínimo
                     'f_TPR': 'r86400',  # Últimas 24 horas
-                    'f_E': '2'  # Nível de experiência
+                    'f_E': '2',  # Nível de experiência
+                    'f_LF': 'f_AL' # Apenas candidaturas simplificadas (Easy Apply)
                 }
                 
                 # Constrói a URL
@@ -180,35 +181,49 @@ class LinkedInAutomation(BaseAutomation):
             return False
             
     def _handle_application_modal(self, resume_path=None):
-        """Lida com o modal de aplicação"""
+        """Lida com o modal de aplicação de múltiplas etapas."""
         try:
-            # Aguarda o modal aparecer
-            self.safe_sleep(2)
-            
-            # Verifica se há upload de currículo
-            if resume_path:
-                file_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                if file_inputs:
-                    file_inputs[0].send_keys(resume_path)
+            # Loop para lidar com as etapas do modal
+            for _ in range(5): # Limite de 5 etapas para evitar loops infinitos
+                # Pular seleção de currículo
+                next_button = self.wait_for_element(By.XPATH, "//button[contains(text(), 'Avançar') or contains(text(), 'Next')]")
+                if next_button:
+                    next_button.click()
                     self.safe_sleep(2)
-            
-            # Procura pelo botão de enviar aplicação
-            submit_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Submit') or contains(text(), 'Enviar') or contains(text(), 'Send')]")
-            
-            if submit_buttons:
-                submit_buttons[0].click()
-                self.safe_sleep(3)
-                self.logger.info("Aplicação enviada com sucesso!")
-                return True
-            else:
-                # Se não encontrou botão de enviar, pode ser um processo multi-etapas
-                next_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Next') or contains(text(), 'Próximo')]")
-                if next_buttons:
-                    self.logger.info("Processo de aplicação requer etapas adicionais")
-                    return False
-                    
+
+                # Responder perguntas de sim/não
+                yes_buttons = self.driver.find_elements(By.XPATH, "//input[@type='radio' and contains(@id, 'yes')]")
+                for button in yes_buttons:
+                    try:
+                        button.click()
+                    except Exception as e:
+                        self.logger.warning(f"Não foi possível clicar no botão 'sim': {e}")
+
+                # Responder perguntas descritivas (ex: salário)
+                salary_inputs = self.driver.find_elements(By.XPATH, "//input[contains(@id, 'currency')]")
+                for input_field in salary_inputs:
+                    try:
+                        input_field.send_keys('1900') # Valor padrão
+                    except Exception as e:
+                        self.logger.warning(f"Não foi possível preencher o campo de salário: {e}")
+
+                # Clicar em 'Revisar' ou 'Enviar'
+                review_button = self.wait_for_element(By.XPATH, "//button[contains(text(), 'Revisar') or contains(text(), 'Review')]")
+                if review_button:
+                    review_button.click()
+                    self.safe_sleep(2)
+
+                submit_button = self.wait_for_element(By.XPATH, "//button[contains(text(), 'Enviar inscrição') or contains(text(), 'Submit application')]")
+                if submit_button:
+                    submit_button.click()
+                    self.safe_sleep(3)
+                    self.logger.info("Aplicação enviada com sucesso!")
+                    return True
+
+            self.logger.warning("Não foi possível concluir a aplicação após 5 etapas.")
+            return False
+
         except Exception as e:
             self.logger.error(f"Erro no modal de aplicação: {str(e)}")
-            
-        return False
+            return False
 

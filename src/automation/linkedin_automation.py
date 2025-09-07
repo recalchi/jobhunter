@@ -6,6 +6,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys # Importar Keys
 from src.automation.base_automation import BaseAutomation
+import urllib.parse
 
 class LinkedInAutomation(BaseAutomation):
     def __init__(self, headless=True):
@@ -53,111 +54,18 @@ class LinkedInAutomation(BaseAutomation):
             for job_type in job_types:
                 self.logger.info(f"Buscando vagas para: {job_type}")
                 
-                # Navega para a página de busca de vagas
-                self.driver.get(self.jobs_url)
-                self.safe_sleep(3)
-
                 # Remove aspas do job_type
                 clean_job_type = job_type.replace("\\'", "").replace("\"", "")
 
-                # Preenche o campo de busca de vagas
-                search_field_selectors = [
-                    (By.XPATH, "//input[contains(@id, \'jobs-search-box-keyword-id\')]", "Campo de busca por ID"),
-                    (By.XPATH, "//input[contains(@aria-label, \'Search by title\')]", "Campo de busca por aria-label"),
-                    (By.XPATH, "//input[contains(@placeholder, \'Pesquisar por título, palavra-chave ou empresa\')]", "Campo de busca por placeholder (PT)"),
-                    (By.XPATH, "//input[contains(@placeholder, \'Search by title, keyword, or company\')]", "Campo de busca por placeholder (EN)"),
-                    (By.XPATH, "//input[contains(@placeholder, \'Pesquisar\')]", "Campo de busca genérico"),
-                    (By.CSS_SELECTOR, "input[data-test-global-typeahead-input]", "Campo de busca por data-test"),
-                    (By.CSS_SELECTOR, "input[name=\'keywords\']", "Campo de busca por nome")
-                ]
-                search_field = None
-                for by_type, selector, description in search_field_selectors:
-                    try:
-                        self.logger.info(f"Tentando encontrar campo de busca: {description} ({selector})")
-                        search_field = WebDriverWait(self.driver, 15).until(
-                            EC.element_to_be_clickable((by_type, selector))
-                        )
-                        if search_field:
-                            search_field.clear()
-                            search_field.send_keys(clean_job_type)
-                            self.safe_sleep(1)
-                            self.logger.info(f"Campo de busca preenchido com sucesso usando: {description}")
-                            break
-                    except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
-                        self.logger.warning(f"Não foi possível encontrar/interagir com o campo de busca ({description}): {e}")
-                        continue
+                # Constrói a URL de busca diretamente
+                encoded_job_type = urllib.parse.quote_plus(clean_job_type)
+                encoded_location = urllib.parse.quote_plus(location)
+                search_url = f"{self.jobs_url}?keywords={encoded_job_type}&location={encoded_location}"
                 
-                if not search_field:
-                    self.logger.error("Não foi possível encontrar o campo de busca de vagas após todas as tentativas.")
-                    continue
-
-                # Preenche o campo de localização
-                location_field_selectors = [
-                    (By.XPATH, "//input[contains(@id, \'jobs-search-box-location-id\')]", "Campo de localização por ID"),
-                    (By.XPATH, "//input[contains(@aria-label, \'Search by location\')]", "Campo de localização por aria-label"),
-                    (By.XPATH, "//input[contains(@placeholder, \'Localização\')]", "Campo de localização por placeholder (PT)"),
-                    (By.XPATH, "//input[contains(@placeholder, \'Location\')]", "Campo de localização por placeholder (EN)"),
-                    (By.CSS_SELECTOR, "input[name=\'location\']", "Campo de localização por nome")
-                ]
-                location_field = None
-                for by_type, selector, description in location_field_selectors:
-                    try:
-                        self.logger.info(f"Tentando encontrar campo de localização: {description} ({selector})")
-                        location_field = WebDriverWait(self.driver, 10).until(
-                            EC.element_to_be_clickable((by_type, selector))
-                        )
-                        if location_field:
-                            location_field.clear()
-                            location_field.send_keys(location)
-                            self.safe_sleep(1)
-                            self.logger.info(f"Campo de localização preenchido com sucesso usando: {description}")
-                            break
-                    except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
-                        self.logger.warning(f"Não foi possível encontrar/interagir com o campo de localização ({description}): {e}")
-                        continue
-
-                if not location_field:
-                    self.logger.error("Não foi possível encontrar o campo de busca de localização após todas as tentativas.")
-                    continue
-
-                # Simula a tecla Enter no campo de localização para acionar a busca
-                self.logger.info("Simulando tecla Enter no campo de localização para acionar a busca.")
-                location_field.send_keys(Keys.ENTER)
-                self.safe_sleep(3)
-                self.logger.info("Busca acionada com sucesso via tecla Enter.")
-
-                # Tenta clicar no botão de busca como fallback
-                search_button_selectors = [
-                    (By.XPATH, "//button[contains(@class, \'jobs-search-box__submit-button\')]", "Botão de busca por classe"),
-                    (By.XPATH, "//button[@type=\'submit\']", "Botão de busca por tipo submit"),
-                    (By.XPATH, "//button[contains(@aria-label, \'Pesquisar\')]", "Botão de busca por aria-label (PT)"),
-                    (By.XPATH, "//button[contains(@aria-label, \'Search\')]", "Botão de busca por aria-label (EN)"),
-                    (By.CSS_SELECTOR, "button[data-test-search-button]", "Botão de busca por data-test"),
-                    (By.XPATH, "//button[contains(@class, \'search-button\')]", "Botão de busca genérico por classe")
-                ]
-                button_clicked = False
-                for by_type, selector, description in search_button_selectors:
-                    try:
-                        self.logger.info(f"Tentando clicar no botão de busca como fallback: {description} ({selector})")
-                        search_button = WebDriverWait(self.driver, 10).until(
-                            EC.element_to_be_clickable((by_type, selector))
-                        )
-                        if search_button:
-                            search_button.click()
-                            self.safe_sleep(3)
-                            self.logger.info(f"Botão de busca clicado com sucesso usando: {description}")
-                            button_clicked = True
-                            break
-                    except (TimeoutException, NoSuchElementException, ElementClickInterceptedException) as e:
-                        self.logger.warning(f"Não foi possível clicar no botão de busca ({description}): {e}")
-                        continue
-                
-                if not button_clicked:
-                    self.logger.error("Não foi possível clicar no botão de busca após todas as tentativas.")
-                    continue
-
-                # Aguarda a página carregar
-                self.safe_sleep(3)
+                self.logger.info(f"Navegando diretamente para a URL de busca: {search_url}")
+                self.driver.get(search_url)
+                self.safe_sleep(5) # Aumenta o tempo de espera para o carregamento da página
+                self.logger.info("Página de busca carregada.")
 
                 # Tenta clicar no botão \'Todos os filtros\'
                 all_filters_clicked = False

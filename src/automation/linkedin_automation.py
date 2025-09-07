@@ -58,7 +58,7 @@ class LinkedInAutomation(BaseAutomation):
                 self.safe_sleep(3)
 
                 # Remove aspas do job_type
-                clean_job_type = job_type.replace("\\\'", "").replace("\"", "")
+                clean_job_type = job_type.replace("\\'", "").replace("\"", "")
 
                 # Preenche o campo de busca de vagas
                 search_field_selectors = [
@@ -159,7 +159,7 @@ class LinkedInAutomation(BaseAutomation):
                 # Aguarda a página carregar
                 self.safe_sleep(3)
 
-                # Tenta clicar no botão \'Todos os filtros\' com múltiplos seletores
+                # Tenta clicar no botão \'Todos os filtros\'
                 all_filters_clicked = False
                 filter_selectors = [
                     (By.XPATH, "//button[contains(text(), \'Todos os filtros\')]", "Botão \'Todos os filtros\' por texto (PT)"),

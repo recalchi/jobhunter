@@ -87,7 +87,8 @@ class LinkedInAutomation(BaseAutomation):
                 # Tenta aplicar filtros de localidade e outros, se necessário
                 try:
                     self.logger.info("Iniciando aplicação de filtros de localidade e candidatura simplificada...")
-                    # Clica no campo de localidade e digita a localização
+                    
+                    # 1. Clica no campo de localidade e digita a localização
                     self.logger.debug("Procurando campo de localidade...")
                     location_input = self.wait_for_element(By.XPATH, "//input[contains(@aria-label, 'Localidade')]", timeout=15)
                     if location_input:
@@ -102,14 +103,15 @@ class LinkedInAutomation(BaseAutomation):
                     else:
                         self.logger.warning("Campo de localidade não encontrado. Pulando aplicação de localidade.")
 
-                    # Clica no botão 'Todos os filtros'
+                    # 2. Clica no botão 'Todos os filtros'
                     self.logger.debug("Procurando botão 'Todos os filtros'...")
                     self.wait_and_click(By.XPATH, "//button[contains(text(), 'Todos os filtros')]", timeout=15)
                     self.safe_sleep(2)
 
-                    # Ativa o filtro de 'Candidatura simplificada'
+                    # 3. Ativa o filtro de 'Candidatura simplificada'
                     self.logger.debug("Procurando toggle de 'Candidatura simplificada'...")
-                    easy_apply_toggle = self.wait_for_element(By.XPATH, "//span[text()='Candidatura simplificada']/following-sibling::button", timeout=15)
+                    # O seletor foi ajustado para ser mais robusto, procurando pelo texto e o elemento pai/irmão
+                    easy_apply_toggle = self.wait_for_element(By.XPATH, "//span[text()='Candidatura simplificada']/ancestor::li//button", timeout=15)
                     if easy_apply_toggle:
                         self.logger.debug(f"Toggle de 'Candidatura simplificada' encontrado. Status: {easy_apply_toggle.get_attribute('aria-checked')}")
                         if easy_apply_toggle.get_attribute("aria-checked") == "false":
@@ -121,7 +123,7 @@ class LinkedInAutomation(BaseAutomation):
                     else:
                         self.logger.warning("Toggle de 'Candidatura simplificada' não encontrado.")
 
-                    # Clica em 'Exibir resultados'
+                    # 4. Clica em 'Exibir resultados'
                     self.logger.debug("Procurando botão 'Exibir resultados'...")
                     self.wait_and_click(By.XPATH, "//button[contains(text(), 'Exibir resultados')]", timeout=15)
                     self.safe_sleep(5) # Espera mais tempo para os resultados carregarem

@@ -341,3 +341,15 @@ def get_credentials():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@automation_bp.route("/run", methods=["POST"])
+def run_automation():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    job_types = data.get("job_types", ["analista financeiro"])
+
+    driver = LinkedInSuperRobustDriver(headless=False)
+    result = driver.run_full_automation(username, password, job_types, max_applications=2)
+    driver.close()
+
+    return jsonify(result)

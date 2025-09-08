@@ -1,0 +1,11 @@
+echo "__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+chrome_automation_profile/
+chrome_debug_profile/
+linkedin_cookies.json
+debug_html/
+screenshots/
+*.log" > .gitignore

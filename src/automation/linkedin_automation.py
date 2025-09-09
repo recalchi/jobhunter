@@ -1,4 +1,4 @@
-'''
+
 import time
 import json
 from selenium.webdriver.common.by import By
@@ -485,5 +485,5 @@ class LinkedInAutomation(BaseAutomation):
         except Exception as e:
             self.logger.error(f"Erro no modal de aplicação: {str(e)}")
             return False
-'''
+
 

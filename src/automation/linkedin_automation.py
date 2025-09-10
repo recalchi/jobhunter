@@ -1,4 +1,4 @@
-'''
+
 import time
 import json
 from selenium.webdriver.common.by import By
@@ -8,7 +8,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys # Importar Keys
 from src.automation.base_automation import BaseAutomation
 import urllib.parse
-
 class LinkedInAutomation(BaseAutomation):
     def __init__(self, headless=True):
         super().__init__(headless)
@@ -486,5 +485,5 @@ class LinkedInAutomation(BaseAutomation):
         except Exception as e:
             self.logger.error(f"Erro no modal de aplicação: {str(e)}")
             return False
-'''
+
 

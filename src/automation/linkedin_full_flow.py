@@ -120,6 +120,7 @@ class LinkedInFullFlow(BaseAutomation):
     def _wait(self, by, value, timeout: Optional[int] = None):
         return WebDriverWait(self.driver, timeout or self.timeout).until(EC.presence_of_element_located((by, value)))
 
+
     # -------------------------- Passos principais --------------------------
 
     def login(self, username: str, password: str) -> bool:
@@ -278,87 +279,153 @@ class LinkedInFullFlow(BaseAutomation):
             job_term, location, easy_apply_only, posted_last_days, experience_level
         )
 
-    def process_job_listings(self, max_apply: int = 30) -> int:
+    def process_job_listings(self, max_apply: int = 10, limit_cards: int = 30):
         """
-        Itera a lista de vagas e tenta aplicar via Easy Apply.
-        Retorna número de candidaturas efetivamente enviadas.
-        Quando nenhum candidato é encontrado, grava dumps detalhados por card.
+        Coleta vagas da lista (até `limit_cards`), filtra Easy Apply não inscritas
+        e tenta aplicar até atingir max_apply.
+        Retorna o número de candidaturas efetuadas.
         """
+        from urllib.parse import quote_plus
         applied = 0
         try:
+            self.safe_sleep(0.6)
+
+            # garantir que estamos na página de pesquisa (se não, tenta open fallback)
             try:
-                jobs = self._collect_jobs_from_list(limit=max_apply * 3)
+                current = self.driver.current_url
             except Exception:
-                jobs = []
-
-            # filtrar candidatos (easy + não aplicado)
-            candidates = [j for j in jobs if j.get("easy_apply") and not j.get("already_applied")]
-            self.logger.info(f"📝 {len(candidates)} vagas candidatas encontradas (limite solicit.)")
-
-            # Se não encontrou candidatos, gerar debug granular:
-            if len(candidates) == 0:
-                self.logger.warning("⚠️ Nenhuma vaga marcada como 'easy apply' encontrada — gerando dumps por card para inspeção.")
-                # screenshot da página inteira
+                current = ""
+            if "linkedin.com/jobs/search" not in (current or ""):
                 try:
-                    self._snap("no_candidates_page")
+                    keywords = getattr(self, "search_keywords", getattr(self, "job_term", "analista financeiro"))
+                    loc = getattr(self, "location", None) or "Brasil"
+                    if hasattr(self, "go_to_filtered_jobs"):
+                        self.logger.info("➡️ Tentando abrir página de vagas via go_to_filtered_jobs()")
+                        try:
+                            self.go_to_filtered_jobs(keywords=keywords, location=loc, sort_by="R")
+                        except Exception:
+                            base = "https://www.linkedin.com/jobs/search/"
+                            params = f"?keywords={quote_plus(keywords)}&f_AL=true&sortBy=R"
+                            final = base + params
+                            self.logger.info(f"➡️ Acessando fallback: {final}")
+                            self.driver.get(final)
+                            self.safe_sleep(3)
+                    else:
+                        base = "https://www.linkedin.com/jobs/search/"
+                        params = f"?keywords={quote_plus(keywords)}&f_AL=true&sortBy=R"
+                        final = base + params
+                        self.logger.info(f"➡️ Acessando (fallback): {final}")
+                        self.driver.get(final)
+                        self.safe_sleep(3)
                 except Exception:
-                    pass
-                # dump completo da página
-                try:
-                    self._dump_html("no_candidates_page")
-                except Exception:
-                    pass
-                # salvar outerHTML de cada card para análise
-                for idx, j in enumerate(jobs, start=1):
-                    try:
-                        label = f"card_{idx}_{j.get('job_id') or 'noid'}"
-                        # salvar arquivo com outerHTML
-                        fname = os.path.join(self.debug_dir, f"card_out_{int(time.time())}_{label}.html")
-                        with open(fname, "w", encoding="utf-8") as f:
-                            f.write(j.get("outer_html", "<no-html>"))
-                        self.logger.info(f"🧾 Dump do card salvo: {os.path.basename(fname)} | easy_apply={j.get('easy_apply')} applied={j.get('already_applied')} title='{j.get('title')}' company='{j.get('company')}'")
-                    except Exception as e:
-                        self.logger.warning(f"Não foi possível salvar dump do card #{idx}: {e}")
-                # também salvar um resumo em logs para inspeção
-                self.logger.info("ℹ️ arquivos de debug gerados em: %s", self.debug_dir)
+                    self.logger.warning("⚠️ Não consegui garantir página de pesquisa - seguindo mesmo assim.")
+
+            self.safe_sleep(0.8)
+
+            # coletar vagas (preferindo coleta estruturada)
+            jobs = []
+            try:
+                if hasattr(self, "_collect_jobs_from_list"):
+                    jobs = self._collect_jobs_from_list(limit=limit_cards)
+                else:
+                    anchors = self.driver.find_elements(By.XPATH, "//a[contains(@href,'/jobs/view/')]")
+                    seen = set()
+                    for a in anchors:
+                        href = a.get_attribute("href") or ""
+                        if not href or "/jobs/view/" not in href:
+                            continue
+                        base = href.split("?")[0]
+                        if base in seen:
+                            continue
+                        seen.add(base)
+                        jobs.append({"url": base})
+                        if len(jobs) >= limit_cards:
+                            break
+            except Exception as e:
+                self.logger.warning(f"⚠️ Erro ao coletar lista de vagas: {e}")
+                self._dump_html("collect_jobs_error")
+
+            if not jobs:
+                self.logger.info("🔎 Nenhuma vaga encontrada na lista.")
                 return applied
 
-            # limitar
-            candidates = candidates[:max_apply]
+            # Filtrar: aceitar somente vagas easy_apply = True (quando disponivel) e que não estejam already_applied
+            filtered = []
+            for j in jobs:
+                # se _collect_jobs_from_list já retornou estrutura rica
+                if isinstance(j, dict) and ("easy_apply" in j or "already_applied" in j):
+                    if j.get("already_applied"):
+                        continue
+                    # se easy_apply é falso/None — ainda assim vamos tentar abrir (pode haver botão no painel)
+                    filtered.append(j)
+                else:
+                    filtered.append(j)
 
-            for i, job in enumerate(candidates, start=1):
+            self.logger.info(f"📝 {len(filtered)} vagas coletadas da lista (limit={limit_cards}).")
+            # iterar e aplicar
+            for idx, job in enumerate(filtered, start=1):
                 if applied >= max_apply:
+                    self.logger.info("🎯 Limite de candidaturas atingido.")
                     break
+
                 try:
-                    self.logger.info(f"🧭 [{i}/{len(candidates)}] Processando vaga: {job.get('url') or 'element'} | {job.get('title')} - {job.get('company')}")
+                    job_url = job.get("url") if isinstance(job, dict) and job.get("url") else (job if isinstance(job, str) else None)
+                    self.logger.info(f"🧭 [{idx}/{len(filtered)}] Tentando aplicar:  |  | {job_url or '(card element)'}")
+
                     ok = False
-                    # prioriza abrir via elemento quando disponível (mantém painel direito)
-                    if job.get("el"):
-                        ok = self.open_and_process_job_card(job["el"], i)
+                    # se tiver elemento 'el' (WebElement) tente abrir via elemento (mais rápido)
+                    if isinstance(job, dict) and job.get("el"):
+                        # cuidado com stale element: re-localizar pela job_id/href antes de passar
+                        try:
+                            job_el = job.get("el")
+                            job_id = job.get("job_id")
+                            if job_id:
+                                # re-encontrar elemento na lista para reduzir stale
+                                try:
+                                    re_el = self.driver.find_element(By.CSS_SELECTOR, f"li[data-occludable-job-id='{job_id}']")
+                                    job_el = re_el
+                                except Exception:
+                                    # fallback: procurar pelo href
+                                    try:
+                                        re_a = self.driver.find_element(By.XPATH, f"//a[contains(@href,'/jobs/view/{job_id}')]")
+                                        parent = re_a.find_element(By.XPATH, "./ancestor::li[1]")
+                                        job_el = parent or job_el
+                                    except Exception:
+                                        pass
+                            ok = self.open_and_process_job_card(job_el, idx)
+                        except StaleElementReferenceException:
+                            self.logger.warning("⚠️ StaleElementReference ao usar elemento; tentando por URL.")
+                            if job_url:
+                                ok = self.open_and_process_job_card(job_url, idx)
+                            else:
+                                ok = False
                     else:
-                        ok = self.open_and_process_job_card(job["url"], i)
+                        # usar URL (string)
+                        if isinstance(job, dict) and job.get("url"):
+                            ok = self.open_and_process_job_card(job.get("url"), idx)
+                        elif isinstance(job, str):
+                            ok = self.open_and_process_job_card(job, idx)
+                        else:
+                            ok = False
+
                     if ok:
                         applied += 1
-                        self.logger.info(f"✅ Aplicação confirmada [{applied}] -> {job.get('url')}")
+                        self.logger.info(f"✅ Aplicado ({applied}/{max_apply})")
                     else:
-                        self.logger.info(f"⏭️ Aplicação NÃO confirmada (pular) -> {job.get('url')}")
+                        self.logger.info("⏭️ Não aplicado (pulando).")
+
+                    self.safe_sleep(random.uniform(1.0, 2.0))
                 except Exception as e:
-                    self.logger.exception(f"⚠️ Erro ao processar job #{i}: {e}")
-                    try:
-                        self._dump_html(f"process_job_error_{i}")
-                    except Exception:
-                        pass
+                    self.logger.warning(f"⚠️ Erro ao processar vaga {job.get('url') if isinstance(job, dict) else job}: {e}")
+                    self._dump_html(f"process_job_error_{idx}")
+                    self.safe_sleep(0.5)
                     continue
 
-            self.logger.info(f"✅ Processamento finalizado | Total aplic. confirmadas: {applied}")
+            self.logger.info(f"✅ Processamento finalizado | Total candidaturas efetuadas: {applied}")
             return applied
-
         except Exception as e:
-            self.logger.exception(f"❌ Erro crítico em process_job_listings: {e}")
-            try:
-                self._dump_html("process_job_listings_critical")
-            except Exception:
-                pass
+            self.logger.error(f"💥 Erro ao percorrer vagas: {e}")
+            self._dump_html("listings_iteration_error")
             return applied
 
     def robust_click(self, element):
@@ -386,6 +453,46 @@ class LinkedInFullFlow(BaseAutomation):
         except Exception:
             return False
 
+    def find_job_cards(self):
+        """
+        Procura por cards/links de vagas com vários seletors e retorna lista de WebElements (ou dicts).
+        Preferência por elementos visíveis no painel esquerdo; fallback para links.
+        """
+        from selenium.webdriver.common.by import By
+        job_cards = []
+        selectors = [
+            "li[data-occludable-job-id]",           # muito comum
+            ".jobs-search-results__list-item",      # lista nova
+            ".job-card-container",                  # antigo
+            ".job-search-card",                     # fallback
+            "a.base-card__full-link",               # links completos
+            "a[href*='/jobs/view/']"                # fallback definitivo
+        ]
+        try:
+            for sel in selectors:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    visible = [e for e in els if e.is_displayed()]
+                    if visible:
+                        self.logger.info(f"✅ Encontrados {len(visible)} cards com seletor '{sel}'")
+                        job_cards = visible
+                        break
+                except Exception:
+                    continue
+
+            # fallback extra: procurar anchors no painel esquerdo (por vezes os cards estão como links)
+            if not job_cards:
+                try:
+                    anchors = self.driver.find_elements(By.XPATH, "//div[contains(@class,'jobs-search-results')]//a[contains(@href,'/jobs/view/')]")
+                    visible = [a for a in anchors if a.is_displayed()]
+                    if visible:
+                        self.logger.info(f"✅ Fallback: encontrados {len(visible)} anchors de job")
+                        job_cards = visible
+                except Exception:
+                    pass
+        except Exception as e:
+            self.logger.warning(f"⚠️ Erro em find_job_cards: {e}")
+        return job_cards
 
     def go_to_filtered_jobs(
         self,
@@ -398,19 +505,27 @@ class LinkedInFullFlow(BaseAutomation):
         """Monta a URL de busca de vagas no LinkedIn já com filtros aplicados."""
         try:
             # GeoIdes usados comumente (ajuste/expanda conforme necessário)
+            # dentro de go_to_filtered_jobs
             geo_map = {
-                "Brasil": "1047466682",      # (corrigido para geoId comum do Brasil)
-                "São Paulo": "106057199",
-                "São Paulo, SP": "104176396",  # keep as fallback - adapte se necessário
+                "brasil": ["1047466682", "104746682", "104746682"],    # variações comuns
+                "são paulo, sp": ["106057199", "104176396"],
+                "sao paulo": ["106057199", "104176396"],
+                "são paulo": ["106057199", "104176396"],
+                "sao paulo, sp": ["106057199", "104176396"],
             }
-            # tenta achar melhor match para location (maior correspondência)
+            # selecionar melhor match
             geo_id = None
-            for k, v in geo_map.items():
-                if k.lower() in location.lower():
-                    geo_id = v
+            for k, vals in geo_map.items():
+                if k in location.lower():
+                    geo_id = vals[0]
                     break
             if not geo_id:
-                geo_id = geo_map.get("Brasil", "1047466682")
+                # tentar extrair geoId direto da url de location (se o usuário passou um geoId)
+                if isinstance(location, str) and location.isdigit():
+                    geo_id = location
+                else:
+                    # fallback para Brasil
+                    geo_id = geo_map["brasil"][0]
 
             base_url = f"{self.BASE_URL}/jobs/search/"
             params = {
@@ -447,277 +562,155 @@ class LinkedInFullFlow(BaseAutomation):
 
     def open_and_process_job_card(self, anchor_el_or_url, idx: int) -> bool:
         """
-        Abre o job (elemento ou URL), localiza o botão Easy Apply (com wrappers),
-        clica e delega para handle_application_modal. Gera dumps quando houver
-        problemas ou quando detecta 'já aplicado'.
+        Abre card/URL, localiza botão 'Easy Apply' / 'Candidatura simplificada' em múltiplos lugares,
+        clica e delega para handle_application_modal(). Retorna True apenas se detectar confirmação.
         """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
-        import time, os
+        from selenium.webdriver.support import expected_conditions as EC
+        import time, random
 
         def _close_overlays():
-            overlays_xp = [
-                "//button[@aria-label='Fechar']",
-                "//button[contains(normalize-space(.),'Fechar')]",
-                "//button[contains(normalize-space(.),'Close')]",
-                "//button[contains(normalize-space(.),'Cancelar')]",
-                "//button[contains(normalize-space(.),'Dismiss')]"
-            ]
-            for xp in overlays_xp:
+            for xp in [
+                "//button[@aria-label='Fechar']", "//button[contains(normalize-space(.),'Fechar')]",
+                "//button[contains(normalize-space(.),'Close')]","//button[contains(normalize-space(.),'Cancelar')]"
+            ]:
                 try:
                     for b in self.driver.find_elements(By.XPATH, xp):
-                        try:
-                            if b.is_displayed():
+                        if b.is_displayed():
+                            try:
                                 self.driver.execute_script("arguments[0].click();", b)
-                                self.safe_sleep(0.2)
-                        except Exception:
-                            continue
+                                self.safe_sleep(0.15)
+                            except Exception:
+                                pass
                 except Exception:
-                    continue
+                    pass
 
         try:
             _close_overlays()
-
             # abrir via url ou clicando no card
             if isinstance(anchor_el_or_url, str):
-                url = anchor_el_or_url
-                self.logger.info(f"🔗 Navegando para URL (fallback): {url}")
-                self.driver.get(url)
+                self.logger.info(f"🔗 ({idx}) Abrindo URL: {anchor_el_or_url}")
+                self.driver.get(anchor_el_or_url)
                 self.safe_sleep(1.2)
             else:
-                li = anchor_el_or_url
-                a = None
+                card = anchor_el_or_url
                 try:
-                    a = li.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/'], a.base-card__full-link")
-                except Exception:
+                    # clicar no card para abrir painel direito (se aplicável)
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+                    self.safe_sleep(0.2)
                     try:
-                        a = li.find_element(By.TAG_NAME, "a")
+                        card.click()
                     except Exception:
-                        a = None
-
-                # se o próprio card tem botão easyapply, tentar clicar direto
-                try:
-                    card_btns = li.find_elements(By.XPATH, ".//button[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Easy Apply') or contains(@data-control-name,'apply') or contains(@id,'jobs-apply-button-id')]")
-                    for btn in card_btns:
                         try:
-                            if btn.is_displayed():
-                                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                                self.safe_sleep(0.2)
-                                try:
-                                    btn.click()
-                                except Exception:
-                                    self.driver.execute_script("arguments[0].click();", btn)
-                                self.safe_sleep(1.0)
-                                # delega para modal handler
-                                return bool(self.handle_application_modal())
+                            self.driver.execute_script("arguments[0].click();", card)
                         except Exception:
-                            continue
+                            pass
+                    self.safe_sleep(0.7)
                 except Exception:
                     pass
 
-                # abrir painel direito (clicando no link/título)
-                if a:
-                    try:
-                        self.logger.info("🖱️ Abrindo painel direito (clique no título/link do job).")
-                        self.robust_click(a)
-                        WebDriverWait(self.driver, min(6, max(4, int(self.timeout)))).until(
-                            lambda d: d.find_elements(By.CSS_SELECTOR, "div.jobs-details__main-content, div.jobs-unified-top-card, div.job-details-jobs-unified-top-card__container--two-pane")
-                        )
-                        self.safe_sleep(0.6)
-                    except Exception:
-                        self.safe_sleep(0.8)
-
-            _close_overlays()
-
-            # detectar 'já aplicado' restrito ao painel (evita falsos positivos)
-            panel = None
-            panel_selectors = [
-                "div.job-details-jobs-unified-top-card__container--two-pane",
-                "div.jobs-unified-top-card",
-                "div.jobs-details__main-content",
-                "div.jobs-details-top-card"
+            # buscar botão 'Easy Apply' / 'Candidatura simplificada' em várias localizações:
+            apply_selectors = [
+                "#jobs-apply-button-id", # ID específico do botão de candidatura simplificada
+                "//button[contains(@class, 'jobs-apply-button') and contains(@aria-label, 'Candidatura simplificada')]",
+                "//button[contains(@class, 'jobs-apply-button') and contains(@aria-label, 'Easy Apply')]",
+                "//button[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Easy Apply') or contains(normalize-space(.),'Candidatar-se')]",
+                "button.jobs-apply-button",                      # classe comum
+                "//button[contains(@aria-label,'Apply') or contains(@aria-label,'Candidatura') or contains(@aria-label,'Apply on LinkedIn')]",
+                "//a[contains(@href,'apply') and contains(normalize-space(.),'Easy Apply')]",
+                "//div[contains(@class,'jobs-apply-button-top-card')]//button"
             ]
-            for sel in panel_selectors:
-                try:
-                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
-                    if el and el.is_displayed():
-                        panel = el
-                        break
-                except Exception:
-                    continue
 
-            search_scope = panel if panel is not None else self.driver
-            try:
-                applied_badges = search_scope.find_elements(By.XPATH, ".//*[contains(normalize-space(.),'Candidatura enviada') or contains(normalize-space(.),'Candidatou-se') or contains(normalize-space(.),'Applied') or contains(normalize-space(.),'You already applied')]")
-                if applied_badges:
-                    snippet = (applied_badges[0].text or "")[:200]
-                    self.logger.info(f"⏩ Já aplicado detectado no painel (escopo {'panel' if panel else 'page'}). Texto: {snippet}")
-                    # dump para debug (screenshot + HTML do painel)
-                    try:
-                        self._snap(f"applied_detected_{idx}")
-                    except Exception:
-                        pass
-                    try:
-                        if panel:
-                            fname = os.path.join(self.debug_dir, f"panel_out_{int(time.time())}_{idx}.html")
-                            with open(fname, "w", encoding="utf-8") as f:
-                                f.write(panel.get_attribute("outerHTML") or "")
-                            self.logger.info(f"🧾 HTML do painel salvo: {os.path.basename(fname)}")
-                        else:
-                            self._dump_html(f"applied_detected_{idx}")
-                    except Exception as e:
-                        self.logger.warning(f"Não foi possível salvar HTML do painel (applied_detected): {e}")
-                    return False
-            except Exception:
-                pass
-
-            # --- procurar botão Easy Apply com heurísticas (button direto e wrappers) ---
-            easy_btn = None
-            candidate_xpaths = [
-                "//button[@id='jobs-apply-button-id']",
-                "//button[contains(@aria-label,'Candidatura simplificada') or contains(@aria-label,'Easy Apply') or contains(@aria-label,'Apply')]",
-                "//button[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Easy Apply')]",
-                "//button[contains(@data-control-name,'apply') or contains(@data-control-name,'inapply')]",
-                "//a[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Easy Apply') or contains(normalize-space(.),'Apply')]"
-            ]
-            for xp in candidate_xpaths:
+            apply_btn = None
+            for sel in apply_selectors:
                 try:
-                    els = self.driver.find_elements(By.XPATH, xp)
+                    if sel.strip().startswith("//"):
+                        els = self.driver.find_elements(By.XPATH, sel)
+                    else:
+                        els = self.driver.find_elements(By.CSS_SELECTOR, sel)
                     for e in els:
                         try:
                             if e.is_displayed():
-                                easy_btn = e
+                                apply_btn = e
                                 break
                         except Exception:
-                            easy_btn = e
+                            apply_btn = e
                             break
-                    if easy_btn:
+                    if apply_btn:
                         break
                 except Exception:
                     continue
 
-            # fallback: procurar wrappers DIV e pegar botão interno
-            if not easy_btn:
+            # se não encontrou botão direto, procurar no painel direito (panel content)
+            if not apply_btn:
                 try:
-                    div_wrappers = self.driver.find_elements(By.CSS_SELECTOR, "div.jobs-apply-button, div.jobs-apply-button--top-card, div.jobs-s-apply, div.jobs-apply-button--rounded")
-                    for dw in div_wrappers:
-                        try:
-                            btn = None
-                            try:
-                                btn = dw.find_element(By.TAG_NAME, "button")
-                            except Exception:
-                                try:
-                                    btn = dw.find_element(By.CSS_SELECTOR, "a, div[role='button']")
-                                except Exception:
-                                    btn = None
-                            if btn and (btn.is_displayed() or dw.is_displayed()):
-                                easy_btn = btn
+                    right_panel = self.driver.find_element(By.CSS_SELECTOR, "div.jobs-details__main-content, div.jobs-unified-top-card")
+                    for sel in ["button", "a"]:
+                        candidates = right_panel.find_elements(By.CSS_SELECTOR, sel)
+                        for c in candidates:
+                            txt = (c.text or "").strip()
+                            if ("Candidatura" in txt) or ("Easy Apply" in txt) or ("Candidatar" in txt) or ("Apply" in txt):
+                                apply_btn = c
                                 break
-                        except Exception:
-                            continue
+                        if apply_btn:
+                            break
                 except Exception:
                     pass
 
-            if not easy_btn:
-                # salvar debug e sair
-                self.logger.info("🔎 Botão Easy Apply não encontrado no painel. Criando dump e pulando.")
-                try:
-                    self._snap(f"no_easy_apply_{idx}")
-                except Exception:
-                    pass
-                try:
-                    if panel:
-                        fname = os.path.join(self.debug_dir, f"panel_no_easy_{int(time.time())}_{idx}.html")
-                        with open(fname, "w", encoding="utf-8") as f:
-                            f.write(panel.get_attribute("outerHTML") or "")
-                        self.logger.info(f"🧾 HTML do painel salvo: {os.path.basename(fname)}")
-                    else:
-                        self._dump_html(f"no_easy_apply_{idx}")
-                except Exception:
-                    pass
+            if not apply_btn:
+                self.logger.info(f"⏭️ ({idx}) Botão de candidatura não encontrado — pulando.")
+                # snapshot para debug
+                self._snap(f"no_apply_button_{idx}")
                 return False
 
-            # log info do elemento antes do clique (útil para debugging)
+            # clicar no botão com fallback JS
             try:
-                info = easy_btn.get_attribute("aria-label") or easy_btn.text or easy_btn.get_attribute("id") or str(easy_btn)
-                self.logger.info(f"🔵 EasyApply encontrado (antes do clique): {info[:180]}")
-            except Exception:
-                pass
-
-            # clicar no botão com fallback JS e delegar ao handler
-            try:
-                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", easy_btn)
-                self.safe_sleep(0.25)
-                try:
-                    easy_btn.click()
-                except Exception:
+                if apply_btn.is_displayed():
                     try:
-                        self.driver.execute_script("arguments[0].click();", easy_btn)
+                        apply_btn.click()
                     except Exception:
-                        self.driver.execute_script("arguments[0].dispatchEvent(new MouseEvent('click',{bubbles:true}));", easy_btn)
-                self.safe_sleep(1.0)
+                        self.driver.execute_script("arguments[0].click();", apply_btn)
+                else:
+                    self.driver.execute_script("arguments[0].click();", apply_btn)
+                self.safe_sleep(0.8 + random.random() * 0.6)
             except Exception as e:
-                self.logger.warning(f"⚠️ Falha ao clicar easy_apply: {e}")
-                try:
-                    self._snap(f"easy_click_failed_{idx}")
-                    if panel:
-                        fname = os.path.join(self.debug_dir, f"panel_clickfail_{int(time.time())}_{idx}.html")
-                        with open(fname, "w", encoding="utf-8") as f:
-                            f.write(panel.get_attribute("outerHTML") or "")
-                        self.logger.info(f"🧾 HTML do painel salvo: {os.path.basename(fname)}")
-                    else:
-                        self._dump_html(f"easy_click_failed_{idx}")
-                except Exception:
-                    pass
+                self.logger.warning(f"⚠️ Falha ao clicar apply_btn ({e})")
+                self._snap(f"apply_click_error_{idx}")
                 return False
 
-            # Delegar para o handler do modal (retorna True somente se envio confirmado)
-            result = False
+            # delegar para handler do modal
+            sent = False
             try:
-                result = bool(self.handle_application_modal())
-                # quando a aplicação é confirmada, capturar um screenshot final/HTML (audit)
-                if result:
-                    try:
-                        self.safe_sleep(0.4)  # dar tempo para modal final renderizar
-                        self._snap(f"confirmation_{idx}")
-                        self._dump_html(f"confirmation_{idx}")
-                    except Exception:
-                        pass
+                sent = self.handle_application_modal()
             except Exception as e:
-                self.logger.exception(f"⚠️ Erro ao processar modal na vaga #{idx}: {e}")
-                try:
-                    self._dump_html(f"modal_handler_exception_{idx}")
-                except Exception:
-                    pass
-                result = False
+                self.logger.warning(f"⚠️ Erro no handle_application_modal: {e}")
+                self._dump_html(f"handle_modal_error_{idx}")
+                sent = False
 
-            _close_overlays()
-            return result
+            if sent:
+                self._snap(f"confirmation_{idx}")
+                self.logger.info(f"✅ Candidatura enviada [{idx}]")
+                return True
+            else:
+                self.logger.info(f"⏭️ Candidatura não confirmada [{idx}]")
+                return False
 
         except Exception as e:
-            self.logger.exception(f"❌ Erro ao abrir/processar vaga #{idx}: {e}")
-            try:
-                self._dump_html(f"open_proc_error_{idx}")
-            except Exception:
-                pass
+            self.logger.error(f"❌ open_and_process_job_card erro: {e}")
+            self._dump_html(f"open_card_error_{idx}")
             return False
 
     def _collect_jobs_from_list(self, limit: int = 30) -> List[Dict[str, Any]]:
         jobs = []
         try:
-            # Seletores de containers comuns (varia entre versões do LinkedIn)
+            # Seletores de containers comuns
             cards = self.driver.find_elements(By.CSS_SELECTOR,
-                "li[data-occludable-job-id], ul.scaffold-layout__list-container li, ul.jobs-search__results-list li, div.job-card-container--clickable"
+                "li[data-occludable-job-id], ul.scaffold-layout__list-container li, ul.jobs-search__results-list li"
             )
             seen = set()
             for card in cards[:limit]:
                 try:
-                    # pegar outerHTML para heurísticas em texto
-                    try:
-                        outer = (card.get_attribute("outerHTML") or "").lower()
-                    except Exception:
-                        outer = ""
-
                     a = None
                     try:
                         a = card.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/'], a.base-card__full-link, a.job-card-list__title, a.job-card-container__link")
@@ -730,41 +723,45 @@ class LinkedInFullFlow(BaseAutomation):
                     url = a.get_attribute("href") if a else None
                     if not url or "/jobs/view/" not in url:
                         # pular itens irrelevantes
-                        # alguns cards aparecem sem link de vaga (ads, promoções)
                         continue
                     base = url.split('?')[0]
                     if base in seen:
                         continue
                     seen.add(base)
 
-                    # heurísticas mais robustas para detectar Easy Apply:
+                    # detectar 'easy apply' por várias heurísticas (texto dentro do card, link, classes)
                     easy_apply = False
                     try:
-                        if "candidatura simplificada" in outer or "easy apply" in outer or "easyapply" in outer:
+                        # procura texto visível no card (pt/en)
+                        txts = card.find_elements(By.XPATH,
+                            ".//*[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Candidatura Simplificada') or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'easy apply')]"
+                        )
+                        if txts:
                             easy_apply = True
-                        # procurar atributos/strings comuns
-                        elif "jobs-apply-button" in outer or "data-control-name=\"apply\"" in outer or "data-control-name='apply'" in outer or "apply" in outer and ("button" in outer or "aria-label" in outer):
-                            easy_apply = True
-                        # checar elementos específicos
                         else:
-                            if card.find_elements(By.XPATH, ".//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'easy apply')]"):
-                                easy_apply = True
-                            if card.find_elements(By.XPATH, ".//*[contains(normalize-space(.),'Candidatura simplificada')]"):
-                                easy_apply = True
+                            # procura botão/anchor com classes/atributos típicos
+                            elems = card.find_elements(By.XPATH,
+                                ".//button[contains(@class,'jobs-apply-button') or contains(@data-control-name,'apply') or contains(@aria-label,'Apply') or contains(@aria-label,'Candidatura')] | .//a[contains(@href,'apply') or contains(.,'Easy Apply') or contains(.,'Candidatura') ]"
+                            )
+                            for e in elems:
+                                try:
+                                    if e.is_displayed():
+                                        easy_apply = True
+                                        break
+                                except Exception:
+                                    easy_apply = True
+                                    break
                     except Exception:
                         easy_apply = False
 
                     # detectar já aplicado (badge/linha)
                     already_applied = False
                     try:
-                        if "candidatura enviada" in outer or "candidatou-se" in outer or "applied" in outer:
+                        badges = card.find_elements(By.XPATH,
+                            ".//*[contains(normalize-space(.),'Candidatura enviada') or contains(normalize-space(.),'Candidatou-se') or contains(normalize-space(.),'Applied') or contains(normalize-space(.),'You already applied')]"
+                        )
+                        if badges:
                             already_applied = True
-                        else:
-                            badges = card.find_elements(By.XPATH,
-                                ".//*[contains(normalize-space(.),'Candidatura enviada') or contains(normalize-space(.),'Candidatou-se') or contains(normalize-space(.),'Applied') or contains(normalize-space(.),'You already applied')]"
-                            )
-                            if badges:
-                                already_applied = True
                     except Exception:
                         already_applied = False
 
@@ -797,7 +794,6 @@ class LinkedInFullFlow(BaseAutomation):
                         "location": location,
                         "easy_apply": bool(easy_apply),
                         "already_applied": bool(already_applied),
-                        "outer_html": outer,
                         "platform": "LinkedIn"
                     })
                 except Exception:
@@ -812,560 +808,718 @@ class LinkedInFullFlow(BaseAutomation):
             self._dump_html("collect_jobs_error")
             return jobs
 
-    def handle_application_modal(self, max_steps: int = 12) -> bool:
+    def handle_application_modal(self, max_steps: int = 20) -> bool:
         """
-        Handler robusto do modal Easy Apply:
-        - preenche selects, radios, inputs e textareas com heurísticas;
-        - rola o container interno do modal para revelar botões;
-        - detecta e trata o popup 'Salvar esta candidatura?';
-        - salva screenshots / HTML quando relevante (modal_stuck, confirmation, discard, etc).
+        Handler robusto do Easy Apply modal.
+        - Classifica campos (salary/years/integer/decimal/select/textarea/text)
+        - Preenche selects nativos e custom dropdowns (role=listbox / role=option / ul/li)
+        - Preenche inputs/textarea com heurísticas (salário -> número, anos -> número, texto longo -> cover_letter)
+        - Trata radio/checks (prefere 'Sim' ou primeira opção)
+        - Trata popup 'Salvar esta candidatura?' (Descartar por padrão)
+        - Retorna True apenas se detectar confirmação final (texto 'Candidatura enviada' / 'Application submitted')
         """
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        import re, time, os
+        from selenium.webdriver.support.ui import WebDriverWait, Select
+        from selenium.webdriver.support import expected_conditions as EC
+        import re, time
 
-        expected_salary = getattr(self, "expected_salary", None) or getattr(self, "salary_min", None) or 1900
-        expected_salary_str = str(expected_salary)
-        answer_bank = getattr(self, "answer_bank", None) or {
-            "salary": expected_salary_str,
-            "default_text": "Tenho interesse nesta oportunidade e acredito que minha experiência é compatível.",
-            "cover_letter": "Tenho interesse nesta oportunidade. Segue um breve resumo das minhas qualificações...",
-            "english": "Básico"
-        }
+        # config/heurísticas
+        expected_salary = str(getattr(self, "expected_salary", getattr(self, "salary_min", 1900)))
+        min_years = str(getattr(self, "min_experience_years", 1))
+        answer_bank = getattr(self, "answer_bank", {}) or {}
+        default_text = answer_bank.get("default_text", "Tenho interesse nesta oportunidade e acredito que minha experiência é compatível.")
+        cover_letter = answer_bank.get("cover_letter", default_text)
         save_on_discard = getattr(self, "save_on_discard", False)
-        audit_on_submit = getattr(self, "audit_on_submit", True)
 
         def _safe_click(el):
             try:
                 if not el:
                     return False
                 if el.is_displayed():
-                    el.click()
-                    return True
-            except Exception:
-                try:
-                    self.driver.execute_script("arguments[0].click();", el)
-                    return True
-                except Exception:
                     try:
-                        self.driver.execute_script("arguments[0].dispatchEvent(new MouseEvent('click',{bubbles:true}));", el)
+                        el.click()
                         return True
                     except Exception:
-                        return False
+                        self.driver.execute_script("arguments[0].click();", el)
+                        return True
+            except Exception:
+                return False
             return False
 
+        def _find_modal_container():
+            """Tenta encontrar o modal de candidatura usando vários seletores."""
+            for sel in [
+                By.XPATH, "//div[@role=\'dialog\']",
+                By.XPATH, "//form[contains(@class,\'jobs-easy-apply-form\')]",
+                By.CSS_SELECTOR, "div.artdeco-modal-overlay",
+                By.CSS_SELECTOR, "div.jobs-easy-apply-modal"
+            ]:
+                try:
+                    if sel[0] == By.XPATH:
+                        el = self.driver.find_element(sel[0], sel[1])
+                    else:
+                        el = self.driver.find_element(sel[0], sel[1])
+                    if el.is_displayed():
+                        return el
+                except (NoSuchElementException, ElementNotInteractableException):
+                    continue
+            return None
+
         def _set_input_value(inp, value):
+            """Escreve valor lentamente para disparar eventos e dispara event('input') no elemento."""
             try:
                 try:
                     inp.clear()
                 except Exception:
                     pass
-                for ch in str(value):
+                s = str(value)
+                for ch in s:
                     try:
                         inp.send_keys(ch)
-                        time.sleep(0.02)
+                        time.sleep(0.01)
                     except Exception:
                         pass
                 try:
-                    self.driver.execute_script("arguments[0].dispatchEvent(new Event('input'))", inp)
+                    # disparar event input/change para frameworks que escutam
+                    self.driver.execute_script("arguments[0].dispatchEvent(new Event('input',{bubbles:true}));arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", inp)
                 except Exception:
                     pass
-                self.logger.debug(f"📝 Campo preenchido via _set_input_value: {value}")
                 return True
             except Exception:
                 return False
 
         def _find_modal_container():
-            selectors = [
-                "div[data-test-modal-container][data-test-modal-id*='easy-apply']",
-                "div.jobs-easy-apply-modal__content",
-                "div.artdeco-modal__content",
-                "div[data-test-modal-container][data-test-modal-id*='easy-apply-modal']",
-                "div[role='dialog']"
-            ]
-            for sel in selectors:
-                try:
-                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
-                    if el and el.is_displayed():
-                        return el
-                except Exception:
-                    continue
+            """Tenta localizar o dialog/modal do Easy Apply com heurísticas."""
             try:
-                els = self.driver.find_elements(By.CSS_SELECTOR, "div[role='dialog']")
-                for e in els:
-                    if e.is_displayed():
-                        return e
+                # seletores comuns
+                sels = [
+                    "//div[@role='dialog' and .//form[contains(@class,'jobs-apply-form') or .//label]]",
+                    "//form[contains(@class,'jobs-easy-apply-form')]",
+                    "//div[contains(@class,'jobs-easy-apply-modal')]",
+                    "//div[contains(@class,'artdeco-modal__content') and .//form]"
+                ]
+                for s in sels:
+                    els = self.driver.find_elements(By.XPATH, s)
+                    for e in els:
+                        if e.is_displayed():
+                            return e
+            except Exception:
+                pass
+            # fallback: primeiro dialog visível
+            try:
+                dialogs = self.driver.find_elements(By.XPATH, "//div[@role='dialog']")
+                for d in dialogs:
+                    if d.is_displayed():
+                        return d
             except Exception:
                 pass
             return None
 
-        def _scroll_modal(to="bottom", step=400):
+        def _get_field_label_text(el):
+            """Tenta extrair um rótulo/descrição do elemento (label text / preceding label / placeholder / aria)."""
             try:
-                modal = _find_modal_container()
-                if not modal:
-                    return False
-                scrollable = None
+                # 1) label[for=id]
+                idv = el.get_attribute("id") or ""
+                if idv:
+                    labs = self.driver.find_elements(By.XPATH, f".//label[@for='{idv}']")
+                    if labs:
+                        txt = (labs[0].text or "").strip()
+                        if txt:
+                            return txt
+                # 2) label/caption imediato anterior
                 try:
-                    candidates = modal.find_elements(By.XPATH, ".//*[contains(@class,'artdeco-modal__content') or contains(@class,'jobs-easy-apply-modal__content') or contains(@style,'overflow')]")
-                    for c in candidates:
+                    p = el.find_element(By.XPATH, "./preceding::label[1]")
+                    txt = (p.text or "").strip()
+                    if txt:
+                        return txt
+                except Exception:
+                    pass
+                # 3) aria / placeholder / name / title
+                parts = [
+                    el.get_attribute("aria-label") or "",
+                    el.get_attribute("placeholder") or "",
+                    el.get_attribute("aria-describedby") or "",
+                    el.get_attribute("name") or "",
+                    el.get_attribute("title") or ""
+                ]
+                aria = " ".join([p for p in parts if p]).strip()
+                if aria:
+                    return aria
+                # 4) pequeno fallback parent text
+                try:
+                    parent = el.find_element(By.XPATH, "ancestor::div[1]")
+                    txt = (parent.text or "").strip()
+                    if txt:
+                        # reduzir muito longo
+                        return (txt.split("\n")[0])[:200]
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            return ""
+
+        def classify_label(text):
+            """Classifica rótulo/descrição em tipos: salary, years, integer, decimal, select, textarea, text"""
+            t = (text or "").lower()
+            if not t:
+                return "text"
+            # salário / pretensão
+            if re.search(r"sal[aá]rio|pretens[aã]o|expectativa\s*salar|expected\s*salary|remuner|pretens", t):
+                return "salary"
+            # anos / experiência
+            if re.search(r"\b(anos|ano|years|year|experience|quanto tempo|quanto tempo você|quantos anos)\b", t):
+                return "years"
+            # inteiro / whole number / between
+            if re.search(r"\b(whole number|n[uú]mero inteiro|inteiro|entre \d+ e \d+|between \d+ and \d+)\b", t):
+                return "integer"
+            # decimal / valor monetário
+            if re.search(r"\b(decimal|valor|r\$|\$|€|[,\.]\d{1,2}|valor aproximado)\b", t):
+                return "decimal"
+            # opção sim/não / disponibilidade / presencial / remoto
+            if re.search(r"\b(sim|n[aã]o|yes|no|dispon[ií]vel|presencial|remoto|remote|h[ií]brido|aceita|aceito)\b", t):
+                return "select"
+            # area para texto longo / motivo / descreva / explain
+            if len(t) > 90 or re.search(r"(descreva|explique|por que|why|motivo|justifiqu|explain|describe|give details)", t):
+                return "textarea"
+            return "text"
+
+        def fill_real_select(sel):
+            """Preenche <select> nativo (Select helper)."""
+            try:
+                opts = sel.find_elements(By.TAG_NAME, "option")
+                candidate = None
+                for o in opts:
+                    txt = (o.text or "").strip().lower()
+                    if not txt:
+                        continue
+                    # preferir opção afirmativa
+                    if re.match(r"^(sim|yes|true|1|aceito|aceita|dispon[ií]vel)\b", txt):
+                        candidate = o
+                        break
+                if not candidate:
+                    # escolher primeiro não-vazio diferente do placeholder
+                    for o in opts:
+                        txt = (o.text or "").strip().lower()
+                        if txt and not re.search(r"selecionar|select|choose|escolha", txt.lower()):
+                            candidate = o
+                            break
+                if candidate:
+                    try:
+                        # Usar Select do Selenium para selects nativos
+                        Select(sel).select_by_visible_text(candidate.text)
+                        # Disparar evento de mudança para garantir que o LinkedIn (React) reconheça a seleção
+                        self.driver.execute_script("var event = new Event(\'change\', { bubbles: true }); arguments[0].dispatchEvent(event);", sel)
+                        self.safe_sleep(0.5) # Pequena pausa para o JS do LinkedIn processar a mudança
+                        return True
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Falha ao selecionar opção no select nativo com Select: {e}")
+                        # Fallback para click direto se Select falhar
                         try:
-                            if c.is_displayed():
-                                scrollable = c
+                            candidate.click()
+                            # Disparar evento de mudança para garantir que o LinkedIn (React) reconheça a seleção
+                            self.driver.execute_script("var event = new Event(\'change\', { bubbles: true }); arguments[0].dispatchEvent(event);", sel)
+                            self.safe_sleep(0.5) # Pequena pausa para o JS do LinkedIn processar a mudança
+                            return True
+                        except Exception:
+                            self.logger.warning(f"⚠️ Falha ao clicar na opção do select nativo: {e}")
+                            return False
+            except Exception:
+                pass
+            return False
+
+        def fill_custom_dropdown(toggle_el):
+            """
+            Tenta abrir custom dropdown / combobox e escolher uma opção.
+            heurísticas:
+            - abre o toggle
+            - busca por role=option, li, button dentro do menu
+            - prefere 'Sim'/'Yes' ou opção numérica '1'
+            """
+            try:
+                # abrir
+                if not _safe_click(toggle_el):
+                    return False
+                time.sleep(0.18)
+                # procurar menu (após abrir)
+                menu_candidates = []
+                # role=option/listbox
+                menu_candidates += self.driver.find_elements(By.XPATH, "//div[@role='listbox' or @role='menu' or @role='presentation']")
+                menu_candidates += self.driver.find_elements(By.XPATH, "//ul[contains(@class,'options') or contains(@class,'menu')]|//div[contains(@class,'options') or contains(@class,'menu')]")
+                # filtrar visíveis e próximos ao toggle (prefer)
+                menu = None
+                for m in menu_candidates:
+                    try:
+                        if not m.is_displayed():
+                            continue
+                        # proximidade heurística: contém option
+                        opts = m.find_elements(By.XPATH, ".//li|.//button|.//div[@role='option']|.//span")
+                        if opts:
+                            menu = m
+                            break
+                    except Exception:
+                        continue
+                if not menu:
+                    # fallback: buscar qualquer option visível
+                    opts = self.driver.find_elements(By.XPATH, "//div[@role='option' or @role='menuitem' or contains(@class,'option') or contains(@class,'dropdown__option')]")
+                else:
+                    opts = menu.find_elements(By.XPATH, ".//div[@role='option'] | .//li | .//button | .//span[normalize-space(.)!='']")
+                # escolher opção
+                candidate = None
+                for o in opts:
+                    try:
+                        txt = (o.text or "").strip().lower()
+                        if not txt:
+                            continue
+                        if re.match(r"^(sim|yes|true|1|aceito|aceita|dispon[ií]vel)\b", txt):
+                            candidate = o
+                            break
+                    except Exception:
+                        continue
+                if not candidate:
+                    # escolher primeiro não-vazio
+                    for o in opts:
+                        try:
+                            txt = (o.text or "").strip()
+                            if txt and not re.search(r"select|selecionar|choose", txt.lower()):
+                                candidate = o
                                 break
                         except Exception:
                             continue
-                except Exception:
-                    scrollable = None
-
-                if scrollable is None:
-                    scrollable = modal
-
-                if to == "bottom":
-                    self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable)
-                elif to == "top":
-                    self.driver.execute_script("arguments[0].scrollTop = 0", scrollable)
-                elif to == "step":
-                    self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop + %d" % step, scrollable)
-                else:
+                if candidate:
                     try:
-                        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", scrollable)
+                        _safe_click(candidate)
+                        time.sleep(0.12)
+                        # dispatch events if needed
+                        try:
+                            self.driver.execute_script("arguments[0].dispatchEvent(new Event('click',{bubbles:true}));", candidate)
+                        except Exception:
+                            pass
+                        return True
                     except Exception:
-                        pass
-                return True
-            except Exception:
-                return False
-
-        try:
-            try:
-                WebDriverWait(self.driver, min(6, max(3, int(self.timeout)))).until(
-                    lambda d: d.find_elements(By.CSS_SELECTOR, "div[data-test-modal-container][data-test-modal-id*='easy-apply']") or d.find_elements(By.CSS_SELECTOR, "div.jobs-easy-apply-modal__content") or d.find_elements(By.CSS_SELECTOR, "div.artdeco-modal__content")
-                )
+                        return False
             except Exception:
                 pass
+            return False
 
-            dialog = _find_modal_container()
+        def handle_save_popup_if_present():
+            """Detecta popup 'Salvar esta candidatura?' e clica 'Descartar' (ou 'Salvar' se save_on_discard True)."""
+            try:
+                # procurar por modals/dialogs com esse texto
+                els = self.driver.find_elements(By.XPATH, "//div[contains(.,'Salvar esta candidatura') or contains(.,'Save this application') or contains(.,'Salvar sua candidatura')]")
+                for d in els:
+                    if not d.is_displayed():
+                        continue
+                    # procurar botões
+                    btns = d.find_elements(By.XPATH, ".//button")
+                    btn_discard = None
+                    btn_save = None
+                    for b in btns:
+                        t = (b.text or "").strip().lower()
+                        if "descartar" in t or "discard" in t:
+                            btn_discard = b
+                        if "salvar" in t or "save" in t:
+                            btn_save = b
+                    if btn_discard and not save_on_discard:
+                        _safe_click(btn_discard)
+                        time.sleep(0.4)
+                        self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> descartei.")
+                        return "discarded"
+                    if btn_save and save_on_discard:
+                        _safe_click(btn_save)
+                        time.sleep(0.6)
+                        self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> salvei.")
+                        return "saved"
+                    # fallback: fechar
+                    close = None
+                    try:
+                        close = d.find_element(By.XPATH, ".//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fechar') or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'close')]")
+                    except Exception:
+                        close = None
+                    if close:
+                        _safe_click(close)
+                        time.sleep(0.3)
+                        return "closed"
+            except Exception:
+                pass
+            return None
+
+        # ----------------- MAIN -----------------
+        try:
+            # aguardar modal abrir (breve)
+            dialog = None
+            try:
+                dialog = WebDriverWait(self.driver, min(8, max(3, int(getattr(self, "timeout", 10))))).until(
+                    EC.presence_of_element_located((By.XPATH, "//div[@role=\'dialog\'] | //form[contains(@class,\'jobs-easy-apply-form\')] | //div[contains(@class,\'artdeco-modal-overlay\')] "))
+                )
+            except TimeoutException:
+                self.logger.warning("⚠️ Timeout ao aguardar modal de candidatura.")
+                self._dump_html("modal_timeout")
+                return False
+            except Exception as e:
+                self.logger.warning(f"⚠️ Erro ao encontrar modal de candidatura: {e}")
+                self._dump_html("modal_find_error")
+                return False
+
+            if not dialog:
+                self.logger.warning("⚠️ Modal de candidatura não encontrado após espera.")
+                return False
+
             steps = 0
             last_progress = time.time()
             while steps < max_steps:
                 steps += 1
+                time.sleep(0.25)  # respira um pouco
+
+                # dialog = _find_modal_container() or dialog  # atualizar referência - já atualizado pelo wait
                 progressed = False
 
-                # --- selects ---
+                # 1) preencher selects nativos
                 try:
-                    scope = dialog or self.driver
-                    selects = scope.find_elements(By.CSS_SELECTOR, "select")
+                    selects = dialog.find_elements(By.XPATH, ".//select")
                     for s in selects:
                         try:
-                            opts = s.find_elements(By.TAG_NAME, "option")
-                            chosen = None
-                            for o in opts:
-                                t = (o.text or "").strip().lower()
-                                if "sim" in t or t == "yes":
-                                    chosen = o
-                                    break
-                            if not chosen and len(opts) > 1:
-                                chosen = opts[1]
-                            if chosen:
-                                try:
-                                    chosen.click()
-                                    progressed = True
-                                    self.logger.info(f"📝 Select preenchido: {chosen.text[:40]}")
-                                except Exception:
-                                    try:
-                                        self.driver.execute_script("arguments[0].selected = true; arguments[0].dispatchEvent(new Event('change'))", chosen)
-                                        progressed = True
-                                    except Exception:
-                                        pass
+                            lbl = _get_field_label_text(s)
+                            # Não pular selects que já têm valor, pois pode ser o placeholder ("Selecionar opção")
+                            if fill_real_select(s):
+                                progressed = True
+                                last_progress = time.time()
+                                self.logger.debug(f"📝 select preenchido (nativo) label='{lbl[:60]}'")
+                                # Disparar evento de mudança para garantir que o LinkedIn (React) reconheça a seleção
+                                self.driver.execute_script("var event = new Event('change', { bubbles: true }); arguments[0].dispatchEvent(event);", s)
+                                self.safe_sleep(0.5)  # Pequena pausa para o JS do LinkedIn processar
+                        except Exception as e_select:
+                            self.logger.warning(f"⚠️ Erro menor ao processar um select: {e_select}")
+                            continue
+                except Exception as e_group:
+                    self.logger.error(f"❌ Erro ao buscar selects no modal: {e_group}")
+                    pass
+
+                # 2) preencher custom dropdowns / combobox toggles
+                try:
+                    toggles = dialog.find_elements(By.XPATH, ".//div[@role='listbox'] | .//button[contains(@class,'select') or contains(@class,'dropdown') or contains(@aria-haspopup,'listbox')] | .//div[contains(@class,'select__control') or contains(@class,'fb-dash-form-element__select')]")
+                    for t in toggles:
+                        try:
+                            # pular se já tiver valor visível
+                            txt = (t.text or "").strip()
+                            if txt and not re.search(r"selecionar|select|choose|escolha", txt.lower()):
+                                continue
+                            if fill_custom_dropdown(t):
+                                progressed = True
+                                last_progress = time.time()
+                                self.logger.debug("📝 custom dropdown preenchido")
                         except Exception:
                             continue
                 except Exception:
                     pass
 
-                # --- radios/checkboxes ---
+                # 3) preencher inputs e textareas
                 try:
-                    scope = dialog or self.driver
-                    inputs = scope.find_elements(By.XPATH, ".//input[@type='radio' or @type='checkbox']")
-                    for i_el in inputs:
+                    inputs = dialog.find_elements(By.XPATH, ".//input[not(@type='hidden')] | .//textarea")
+                    for inp in inputs:
                         try:
-                            label_text = ""
-                            try:
-                                label_text = i_el.find_element(By.XPATH, "ancestor::label").text.lower()
-                            except Exception:
-                                label_text = ((i_el.get_attribute("aria-label") or "") + " " + (i_el.get_attribute("name") or "")).lower()
-                            if "sim" in label_text or "yes" in label_text or label_text.strip() == "":
-                                if _safe_click(i_el):
-                                    self.logger.info(f"📝 Radio/Check clicado (preferido): {label_text[:60]}")
-                                    progressed = True
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-
-                # --- inputs/textareas ---
-                try:
-                    scope = dialog or self.driver
-                    fields = scope.find_elements(By.XPATH, ".//input[not(@type='hidden')] | .//textarea")
-                    for f in fields:
-                        try:
-                            tag = f.tag_name.lower()
-                            typ = (f.get_attribute("type") or "").lower()
-                            aria = " ".join([f.get_attribute("aria-label") or "", f.get_attribute("placeholder") or "", f.get_attribute("name") or ""]).lower()
-                            current = (f.get_attribute("value") or "").strip()
+                            if not inp.is_displayed():
+                                continue
+                            # pular se já preenchido
+                            current = (inp.get_attribute("value") or "").strip()
                             if current:
                                 continue
+                            label = _get_field_label_text(inp)
+                            qtype = classify_label(label)
+                            tag = inp.tag_name.lower()
+                            input_type = (inp.get_attribute("type") or "").lower()
 
-                            if typ in ["number", "tel"] or re.search(r"(sal[aá]rio|pretens|remunera|salary|anos|year|years)", aria):
-                                if re.search(r"(year|years|ano|anos)", aria):
-                                    _set_input_value(f, "2")
-                                    progressed = True
-                                    self.logger.info(f"📝 Preenchido anos: 2 ({aria[:40]})")
-                                    continue
-                                if re.search(r"(sal[aá]rio|pretens|remunera|salary)", aria):
-                                    _set_input_value(f, answer_bank.get("salary", expected_salary_str))
-                                    progressed = True
-                                    self.logger.info(f"📝 Preenchido salário/pretensão: {answer_bank.get('salary', expected_salary_str)} ({aria[:40]})")
-                                    continue
-
-                            if tag == "textarea" or typ in ["text","search","email","tel"]:
-                                if re.search(r"(por que|why|descreva|motivo|explique|base salarial|salary base|cover letter)", aria):
-                                    _set_input_value(f, answer_bank.get("cover_letter"))
-                                    progressed = True
-                                    self.logger.info(f"📝 Textarea preenchida com cover_letter ({aria[:40]})")
-                                    continue
-                                if re.search(r"(ingles|english)", aria):
-                                    _set_input_value(f, answer_bank.get("english","Básico"))
-                                    progressed = True
-                                    self.logger.info(f"📝 Preenchido english: {answer_bank.get('english')}")
-                                    continue
-                                _set_input_value(f, answer_bank.get("default_text"))
+                            if qtype == "salary":
+                                # colocar só números (remove formatações)
+                                val = re.sub(r"[^\d\.]", "", expected_salary)
+                                if not val:
+                                    val = expected_salary
+                                _set_input_value(inp, val)
                                 progressed = True
-                                self.logger.info(f"📝 Campo texto preenchido fallback ({aria[:40]})")
+                                last_progress = time.time()
+                                self.logger.info(f"📝 Preenchido salário: {val} ({label[:60]})")
                                 continue
+                            if qtype == "years":
+                                _set_input_value(inp, min_years or "1")
+                                progressed = True
+                                last_progress = time.time()
+                                self.logger.info(f"📝 Preenchido anos: {min_years} ({label[:60]})")
+                                continue
+                            if qtype == "integer":
+                                _set_input_value(inp, "1")
+                                progressed = True
+                                last_progress = time.time()
+                                continue
+                            if qtype == "decimal":
+                                # enviar com .0 se necessário
+                                v = expected_salary
+                                if isinstance(v, (int, float)):
+                                    v = f"{float(v):.1f}"
+                                _set_input_value(inp, str(v))
+                                progressed = True
+                                last_progress = time.time()
+                                continue
+                            if tag == "textarea" or qtype == "textarea":
+                                _set_input_value(inp, cover_letter)
+                                progressed = True
+                                last_progress = time.time()
+                                self.logger.info(f"📝 Preenchido textarea (cover_letter) ({label[:60]})")
+                                continue
+
+                            # fallback texto - evitar usar default_text quando a label sugere número
+                            if re.search(r"pretens|expectativ|sal[aá]rio|valor|quantos|anos", (label or "").lower()):
+                                # tentar colocar número se detectar tokens
+                                if re.search(r"sal[aá]rio|pretens|valor", (label or "").lower()):
+                                    _set_input_value(inp, re.sub(r"[^\d\.]", "", expected_salary))
+                                elif re.search(r"ano|anos|year|years|quantos", (label or "").lower()):
+                                    _set_input_value(inp, min_years or "1")
+                                else:
+                                    _set_input_value(inp, default_text)
+                            else:
+                                _set_input_value(inp, default_text)
+                            progressed = True
+                            last_progress = time.time()
+                            self.logger.debug(f"📝 input preenchido fallback ({label[:50]})")
                         except Exception:
                             continue
                 except Exception:
                     pass
 
-                # --- tentar achar/acionar botão Avançar/Revisar/Enviar ---
+                # 4) radios / checkboxes (prefere 'Sim' / first)
                 try:
-                    scope = dialog or self.driver
-                    candidate_btns = []
+                    groups = dialog.find_elements(By.XPATH, ".//fieldset | .//div[contains(@class,'choice-list') or contains(@class,'radio-list') or contains(@role,'radiogroup')]")
+                    for g in groups:
+                        try:
+                            options = g.find_elements(By.XPATH, ".//input[@type='radio'] | .//input[@type='checkbox']")
+                            if not options:
+                                continue
+                            if any([o.is_selected() for o in options]):
+                                continue
+                            chosen = None
+                            for o in options:
+                                # procurar label próximo com texto Sim/Yes
+                                try:
+                                    lab = None
+                                    # label próximo
+                                    labs = o.find_elements(By.XPATH, "./following::label[1] | ./ancestor::label[1]")
+                                    if labs:
+                                        lab = labs[0]
+                                    txt = (lab.text or "").strip().lower() if lab else ""
+                                    if re.match(r"^(sim|yes|true|1|aceito|aceita)\b", txt):
+                                        chosen = o
+                                        break
+                                except Exception:
+                                    pass
+                            if not chosen:
+                                chosen = options[0]
+                            try:
+                                _safe_click(chosen)
+                                progressed = True
+                                last_progress = time.time()
+                                self.logger.debug("📝 radio/checkbox selecionado")
+                            except Exception:
+                                pass
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                # 5) lidar com popup 'Salvar esta candidatura'
+                popup = handle_save_popup_if_present()
+                if popup == "discarded":
+                    # pop-up descartado -> continuar loop (modal ainda aberto)
+                    time.sleep(0.4)
+                    continue
+                if popup == "saved":
+                    # salvou em vez de enviar -> aborta vaga
+                    return False
+
+                # 6) clicar botões 'Next'/'Revisar'/'Avançar'/'Submit' se presentes
+                clicked_next = False
+                try:
+                    # procurar no dialog primeiro
+                    btn_text_candidates = ["revisar", "avançar", "avancar", "next", "continuar", "enviar candidatura", "enviar", "submit", "review", "done"]
+                    buttons = dialog.find_elements(By.XPATH, ".//button[not(@type='hidden') and normalize-space(.)!='']")
+                    for b in buttons:
+                        try:
+                            txt = (b.text or "").strip().lower()
+                            if not txt:
+                                continue
+                            for cand in btn_text_candidates:
+                                if cand in txt:
+                                    if _safe_click(b):
+                                        clicked_next = True
+                                        time.sleep(0.6)
+                                        last_progress = time.time()
+                                        self.logger.debug(f"🖱️ Cliquei botão '{txt[:40]}' no modal")
+                                        break
+                            if clicked_next:
+                                break
+                        except Exception:
+                            continue
+                    # se não clicou e não há candidatos no dialog, tentar buscar no driver (fallback)
+                    if not clicked_next:
+                        for cand in btn_text_candidates:
+                            try:
+                                b = self.driver.find_element(By.XPATH, f"//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{cand}')]")
+                                if b and b.is_displayed():
+                                    if _safe_click(b):
+                                        clicked_next = True
+                                        time.sleep(0.6)
+                                        last_progress = time.time()
+                                        break
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+                # 7) detectar confirmação final (texto na página / modal de confirmação)
+                try:
+                    body_text = (self.driver.find_element(By.TAG_NAME, "body").text or "").lower()
+                    if ("candidatura enviada" in body_text) or ("application submitted" in body_text) or ("sua candidatura" in body_text and "enviada" in body_text) or ("thank you for applying" in body_text):
+                        self.logger.info("✅ Confirmação detectada no body.")
+                        return True
+                    # também checar por modal de confirmação visível com botão Concluído / Done
                     try:
-                        candidate_btns.extend(scope.find_elements(By.CSS_SELECTOR, "button[data-live-test-easy-apply-submit-button], button[data-test-dialog-primary-btn], button[data-control-name='application_btn'], button[data-control-name='save_application_btn']"))
+                        conf = self.driver.find_elements(By.XPATH, "//div[contains(.,'Candidatura enviada') or contains(.,'Application submitted') or .//button[contains(.,'Concluído') or contains(.,'Done')]]")
+                        for c in conf:
+                            if c.is_displayed():
+                                return True
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+                # 8) se não clicou em next e modal não mudou, tentar clicar botões primários 'Enviar' / 'Submit'
+                if not clicked_next:
+                    try:
+                        prim = dialog.find_elements(By.XPATH, ".//button[contains(@class,'artdeco-button') and (contains(normalize-space(.),'Enviar') or contains(normalize-space(.),'Submit') or contains(normalize-space(.),'Done') or contains(normalize-space(.),'Concluído'))]")
+                        for b in prim:
+                            try:
+                                txt = (b.text or "").strip().lower()
+                                if any(k in txt for k in ["enviar", "submit", "done", "concluído", "concluido"]):
+                                    if _safe_click(b):
+                                        time.sleep(0.8)
+                                        last_progress = time.time()
+                                        progressed = True
+                                        break
+                            except Exception:
+                                continue
                     except Exception:
                         pass
 
-                    if not candidate_btns:
-                        texts = ["enviar candidatura","submit application","submit","revisar","avançar","next"]
-                        for t in texts:
-                            try:
-                                els = scope.find_elements(By.XPATH, f".//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{t}')]")
-                                if els:
-                                    candidate_btns.extend(els)
-                            except Exception:
-                                continue
+                # 9) se não houve progresso por muito tempo -> salvar debug e abortar
+                if not progressed and (time.time() - last_progress) > 14:
+                    self.logger.info("⚠️ Sem progresso no modal por >14s — salvando debug e abortando esta candidatura.")
+                    try:
+                        self._snap("modal_stuck")
+                    except Exception:
+                        pass
+                    try:
+                        self._dump_html("modal_stuck")
+                    except Exception:
+                        pass
+                    return False
 
-                    clicked_any = False
-                    for btn in candidate_btns:
-                        try:
-                            txt = (btn.text or "").strip().lower()
-                            try:
-                                modal = _find_modal_container()
-                                if modal:
-                                    # scroll container so button is visible
-                                    self.driver.execute_script("arguments[0].scrollTop = arguments[1].offsetTop - 24;", modal, btn)
-                            except Exception:
-                                try:
-                                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                                except Exception:
-                                    pass
+                # pequena pausa antes de próxima iteração
+                time.sleep(0.4)
 
-                            # priorizar envio/revisar
-                            if any(k in txt for k in ("enviar","submit","revisar")):
-                                if _safe_click(btn):
-                                    clicked_any = True
-                                    progressed = True
-                                    last_progress = time.time()
-                                    self.safe_sleep(0.9)
-                                    break
-                            else:
-                                if _safe_click(btn):
-                                    clicked_any = True
-                                    progressed = True
-                                    last_progress = time.time()
-                                    self.safe_sleep(0.7)
-                                    break
-                        except Exception:
-                            continue
-
-                    if clicked_any:
-                        # esperar confirmação (texto no modal ou page source)
-                        try:
-                            WebDriverWait(self.driver, min(8, max(4, int(self.timeout)))).until(
-                                lambda d: d.find_elements(By.XPATH, "//*[contains(normalize-space(.),'Candidatura enviada') or contains(normalize-space(.),'Application submitted') or contains(normalize-space(.),'Application sent') or contains(normalize-space(.),'Sua candidatura') or contains(normalize-space(.),'Sua candidatura na')]")
-                            )
-                            self.logger.info("✅ Candidatura enviada (detectada).")
-                            # audit snapshot + HTML (útil quando modal some rápido)
-                            try:
-                                if audit_on_submit:
-                                    self.safe_sleep(0.3)
-                                    self._snap("confirmation_auto")
-                                    self._dump_html("confirmation_auto")
-                            except Exception:
-                                pass
-                            self.safe_sleep(0.6)
-                            return True
-                        except Exception:
-                            # fallback por page_source
-                            page_src = (self.driver.page_source or "").lower()
-                            if any(k in page_src for k in ["candidatura enviada","application submitted","application sent","you applied","sua candidatura","foi enviada"]):
-                                self.logger.info("✅ Candidatura enviada (detected fallback page).")
-                                try:
-                                    if audit_on_submit:
-                                        self.safe_sleep(0.3)
-                                        self._snap("confirmation_auto")
-                                        self._dump_html("confirmation_auto")
-                                except Exception:
-                                    pass
-                                self.safe_sleep(0.6)
-                                return True
-
-                except Exception:
-                    pass
-
-                # --- detectar popup 'Salvar esta candidatura?' e agir ---
-                try:
-                    # CORREÇÃO: selector consertado (antes tinha aspa a mais que quebrava)
-                    discard_modals = self.driver.find_elements(By.CSS_SELECTOR, "div[data-test-modal-container][data-test-modal-id*='data-test-easy-apply-discard-confirmation'], div[data-test-modal-container][data-test-modal-id*='easy-apply-discard'], div[data-test-easy-apply-discard-confirmation], div[data-test-modal-id*='data-test-easy-apply-discard-confirmation']")
-                    if discard_modals:
-                        self.logger.info("ℹ️ Popup 'Salvar esta candidatura?' detectado.")
-                        # salvar snapshot do popup para debug (sempre)
-                        try:
-                            self._snap("discard_popup_detected")
-                            self._dump_html("discard_popup_detected")
-                        except Exception:
-                            pass
-
-                        btn_discard = None
-                        try:
-                            btns = discard_modals[0].find_elements(By.XPATH, ".//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'descartar') or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'discard') or contains(@data-control-name,'discard_application_confirm_btn')]")
-                            if btns:
-                                btn_discard = btns[0]
-                        except Exception:
-                            btn_discard = None
-
-                        btn_save = None
-                        try:
-                            bsave = discard_modals[0].find_elements(By.XPATH, ".//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'salvar') or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'save') or contains(@data-control-name,'save_application_btn')]")
-                            if bsave:
-                                btn_save = bsave[0]
-                        except Exception:
-                            btn_save = None
-
-                        try:
-                            if save_on_discard and btn_save:
-                                _safe_click(btn_save)
-                                self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> cliquei 'Salvar' (config save_on_discard=True).")
-                                self.safe_sleep(0.6)
-                                return False
-                            elif btn_discard:
-                                _safe_click(btn_discard)
-                                self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> cliquei 'Descartar'.")
-                                self.safe_sleep(0.6)
-                                return False
-                            else:
-                                close_btns = discard_modals[0].find_elements(By.XPATH, ".//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fechar') or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'close')]")
-                                if close_btns:
-                                    _safe_click(close_btns[0])
-                                    self.safe_sleep(0.4)
-                                    return False
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                # se nada progrediu, rolar modal e tentar novamente
-                if not progressed:
-                    _scroll_modal(to="step", step=400)
-                    if steps % 3 == 0:
-                        _scroll_modal(to="bottom")
-                    if time.time() - last_progress > 14:
-                        self.logger.info("⚠️ Sem progresso no modal por >14s — salvando debug e abortando esta candidatura.")
-                        try:
-                            self._snap("modal_stuck")
-                            self._dump_html("modal_stuck")
-                        except Exception:
-                            pass
-                        return False
-
-                try:
-                    dialog = _find_modal_container()
-                except Exception:
-                    dialog = dialog
-
-                self.safe_sleep(0.5)
-
+            # max_steps esgotado sem confirmação
             self.logger.info("⚠️ Max steps atingidos no modal; envio não detectado. Salvando debug.")
             try:
                 self._snap("modal_incomplete")
+            except Exception:
+                pass
+            try:
                 self._dump_html("modal_incomplete")
             except Exception:
                 pass
             return False
 
         except Exception as e:
-            self.logger.exception(f"❌ Erro em handle_application_modal (final): {e}")
+            self.logger.exception(f"❌ Erro em handle_application_modal: {e}")
             try:
                 self._dump_html("handle_modal_exception")
             except Exception:
                 pass
             return False
 
-        
-    def answer_question(self, input_el, label=""):
-        """
-        Preenche um input/textarea/select custom conforme heurísticas.
-        - input_el: selenium WebElement
-        - label: texto do rótulo/placeholder para heurísticas
-        """
-        from selenium.webdriver.support.ui import Select
-        import re
-
-        label = (label or "").strip()
-        label_lower = label.lower()
-        answer_bank = getattr(self, "answer_bank", {}) or {}
-        default_text = answer_bank.get("default_text", "Tenho interesse nesta oportunidade e acredito que minha experiência é compatível.")
-        salary_val = str(answer_bank.get("salary", getattr(self, "salary_min", 1900)))
-        english_val = answer_bank.get("english", "Básico")
-        try:
-            tag = (input_el.tag_name or "").lower()
-        except Exception:
-            tag = ""
-
-        def safe_click(el):
+    def _find_and_click_easy_apply(self, job_card, open_panel_if_needed=True):
+        selectors = [
+            "button.jobs-apply-button--top-card",
+            "button.jobs-apply-button",
+            "button[id^='jobs-apply-button']",
+            "button[aria-label*='Candidatura simplificada']",
+            "button[aria-label*='Easy Apply']",
+            "div.jobs-apply-button-top-card button"
+        ]
+        for sel in selectors:
             try:
-                el.click()
+                btns = job_card.find_elements(By.CSS_SELECTOR, sel)
+                for btn in btns:
+                    try:
+                        if btn.is_displayed():
+                            try:
+                                WebDriverWait(self.driver, 2).until(EC.element_to_be_clickable((By.XPATH, ".")))
+                            except Exception:
+                                pass
+                            try:
+                                btn.click()
+                            except Exception:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # abrir painel direito (clicando no título) e procurar botão lá
+        try:
+            link = None
+            try:
+                link = job_card.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/'], a.job-card-list__title")
             except Exception:
                 try:
-                    self.driver.execute_script("arguments[0].click();", el)
+                    link = job_card.find_element(By.TAG_NAME, "a")
                 except Exception:
-                    return False
-            return True
-
-        try:
-            # heurística para decidir valor
-            if re.search(r"sal[aá]rio|pretens|remunera|salary", label_lower):
-                val = salary_val
-            elif re.search(r"(por que|why|descreva|motivo|explain|tell us|qual sua pretens)", label_lower):
-                val = answer_bank.get("cover_letter", default_text)
-            elif re.search(r"ingles|english|proficienc", label_lower):
-                val = english_val
-            elif re.search(r"anos|idade|years|quantos anos", label_lower):
-                # um inteiro pequeno válido (muitas perguntas pedem 0-99)
-                val = "1"
-            elif re.search(r"cpf|cns|documento", label_lower):
-                val = answer_bank.get("document", "")
-            elif re.search(r"sim|não|nao|yes|no", label_lower):
-                # prefer Sim / Yes se for radio/checkbox
-                val = "Sim" if "sim" in label_lower or "yes" in label_lower else "Não"
-            else:
-                val = default_text
-
-            # SELECT nativo
-            if tag == "select":
+                    link = None
+            if link:
                 try:
-                    Select(input_el).select_by_visible_text(val)
+                    self.robust_click(link)
                 except Exception:
-                    # tenta index 1
                     try:
-                        Select(input_el).select_by_index(1)
+                        self.driver.execute_script("arguments[0].click();", link)
                     except Exception:
-                        # tenta a primeira opção que contenha "Sim" / "Yes"
+                        pass
+                self.safe_sleep(0.8)
+                # procurar no painel direito
+                panel_btns = self.driver.find_elements(By.XPATH,
+                    "//button[contains(normalize-space(.),'Candidatura simplificada') or contains(normalize-space(.),'Easy Apply') or contains(normalize-space(.),'Candidatar-se') or contains(@data-control-name,'apply')]"
+                )
+                for b in panel_btns:
+                    if b.is_displayed():
                         try:
-                            opts = input_el.find_elements(By.TAG_NAME, "option")
-                            for o in opts:
-                                t = (o.text or "").lower()
-                                if ("sim" in t or "yes" in t) and "não" not in t:
-                                    o.click()
-                                    break
-                            else:
-                                if opts:
-                                    opts[0].click()
+                            b.click()
                         except Exception:
-                            pass
+                            self.driver.execute_script("arguments[0].click();", b)
+                        return True
+        except Exception:
+            pass
 
-            # INPUTs (texto/number/radio/checkbox/email/tel)
-            elif tag == "input":
-                typ = (input_el.get_attribute("type") or "").lower()
-                if typ in ["radio", "checkbox"]:
-                    # se já estiver checado, nada a fazer
-                    checked = input_el.get_attribute("checked") or input_el.get_attribute("aria-checked")
-                    if not checked:
-                        safe_click(input_el)
-                elif typ in ["number"]:
-                    # alguns number exigem integer/decimal - heurística
-                    if re.search(r"pretens|sal[aá]rio|salary", label_lower):
-                        # enviar decimal com ponto se necessário
-                        num = salary_val
-                    elif re.search(r"anos|years", label_lower):
-                        num = "1"
-                    else:
-                        num = salary_val
+        # busca global (último recurso)
+        try:
+            global_btns = self.driver.find_elements(By.XPATH, "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'candidatura simplificada') or contains(.,'Easy Apply') or contains(@aria-label,'Apply')]")
+            for b in global_btns:
+                if b.is_displayed():
                     try:
-                        input_el.clear()
+                        b.click()
                     except Exception:
-                        pass
-                    input_el.send_keys(num)
-                else:
-                    # texto simples
-                    try:
-                        input_el.clear()
-                    except Exception:
-                        pass
-                    input_el.send_keys(val)
+                        self.driver.execute_script("arguments[0].click();", b)
+                    return True
+        except Exception:
+            pass
 
-            # TEXTAREA
-            elif tag == "textarea":
-                try:
-                    input_el.clear()
-                except Exception:
-                    pass
-                input_el.send_keys(val)
+        return False
 
-            # controles custom (LinkedIn usa botões/divs como selects)
-            else:
-                # tenta detectar combobox/listbox (custom select)
-                try:
-                    role = input_el.get_attribute("role") or ""
-                    if "listbox" in role or "combobox" in role or "button" == (input_el.tag_name or "").lower():
-                        # abrir opções
-                        safe_click(input_el)
-                        time.sleep(0.5)
-                        # procurar opções visíveis
-                        # procura por elementos com role option ou que contenham o texto desejado
-                        options = self.driver.find_elements(By.XPATH, "//div[@role='option' or @role='listitem' or contains(@class,'artdeco-dropdown__option')]")
-                        chosen = None
-                        for o in options:
-                            txt = (o.text or "").strip().lower()
-                            if not txt:
-                                continue
-                            if "sim" in val.lower() and ("sim" in txt or "yes" in txt):
-                                chosen = o
-                                break
-                            if val.lower() in txt:
-                                chosen = o
-                                break
-                        if not chosen and options:
-                            chosen = options[0]
-                        if chosen:
-                            safe_click(chosen)
-                            return
-                except Exception:
-                    pass
-
-            self.logger.info(f"📝 answer_question preencheu '{label}' com: {val}")
-        except Exception as e:
-            self.logger.warning(f"⚠️ answer_question falhou para '{label}': {e}")
 
     def _extract_job_id_from_url(self, url: str) -> str:
         try:
@@ -1451,58 +1605,12 @@ class LinkedInFullFlow(BaseAutomation):
                     self.safe_sleep(1)
 
                 # enviar candidatura
-                if self.wait_and_click(By.XPATH, "//button[contains(normalize-space(.), 'Enviar candidatura') or contains(normalize-space(.), 'Submit application') or //button[@data-live-test-easy-apply-submit-button]"):
-                    # depois do clique: esperar por confirmação explícita ou modal de 'Salvar'
-                    self._snap("12_after_submit_click")
-                    # espera ativa por sinais de confirmação
-                    confirmed = False
-                    for _ in range(20):  # ~ até 10s (ajuste conforme necessário)
-                        time.sleep(0.5)
-                        # 1) confirmação automática / fallback page / texto
-                        if "candidatura confirmada" in (self.driver.page_source or "").lower() or "candidatura enviada" in (self.driver.page_source or "").lower() or "application submitted" in (self.driver.page_source or "").lower():
-                            confirmed = True
-                            break
-                        # 2) modal "Salvar esta candidatura?" -> clicar em SALVAR para não perder
-                        try:
-                            save_btn = self.driver.find_elements(By.XPATH, "//button[normalize-space(.)='Salvar' or normalize-space(.)='Save']")
-                            if save_btn:
-                                self.logger.info("🔔 Modal 'Salvar esta candidatura?' detectado — clicando em Salvar")
-                                try:
-                                    self.driver.execute_script("arguments[0].click();", save_btn[0])
-                                except Exception:
-                                    save_btn[0].click()
-                                time.sleep(0.5)
-                                # depois de salvar, pode aparecer a confirmação
-                                continue
-                        except Exception:
-                            pass
-                        # 3) elemento de confirmação estrutural (ex: div com data-test 'confirmation' ou submit status)
-                        try:
-                            if self.driver.find_elements(By.CSS_SELECTOR, "[data-test='confirmation'], [data-live-test='easy-apply-submitted'], .jobs-submit-confirmation"):
-                                confirmed = True
-                                break
-                        except Exception:
-                            pass
-
-                    if confirmed:
-                        self._snap("12_application_submitted_confirmed")
-                        # opcional: fechar modal safe
-                        try:
-                            self.wait_and_click(By.XPATH, "//button[contains(normalize-space(.), 'Concluído') or contains(normalize-space(.), 'Done') or @aria-label='Fechar' or contains(@aria-label,'Close')]")
-                        except Exception:
-                            pass
-                        return True
-                    else:
-                        self.logger.info("⚠️ Não detectada confirmação após envio — salvando dump e screenshot.")
-                        self._snap("12_application_submitted_no_confirm")
-                        self._dump_html("apply_no_confirm")
-                        # tenta fechar modal com mais segurança (não clicar fora)
-                        try:
-                            self.wait_and_click(By.XPATH, "//button[contains(normalize-space(.), 'Fechar') or @aria-label='Fechar' or contains(@aria-label,'Close')]")
-                        except Exception:
-                            pass
-                        return False
-
+                if self.wait_and_click(By.XPATH, "//button[contains(., 'Enviar candidatura') or contains(., 'Submit application')]"):
+                    self.safe_sleep(2)
+                    self._snap("12_application_submitted")
+                    # fecha modal
+                    self.wait_and_click(By.XPATH, "//button[contains(., 'Concluído') or contains(., 'Done') or @aria-label='Fechar']")
+                    return True
 
                 if not progressed:
                     break
@@ -1515,6 +1623,110 @@ class LinkedInFullFlow(BaseAutomation):
             self.logger.error(f"❌ Erro ao aplicar na vaga: {e}")
             self._dump_html("apply_exception")
             return False
+
+    def parse_validation_and_retry(self, dialog_scope=None):
+        """
+        Procura mensagens de erro/validação no modal (texto em vermelho / role=alert)
+        Se encontrar padrões como 'Enter a whole number' / 'Enter a decimal number' -> tenta ajustar
+        Retorna True se tentou corrigir algo (e o caller deve re-iterar), False caso contrário.
+        """
+        try:
+            scope = dialog_scope if dialog_scope is not None else self.driver
+            # mensagens de erro comuns: role alert, elementos com atributo data-test...-error, text in red
+            msgs = scope.find_elements(By.XPATH, "//*[contains(@class,'error') or contains(@class,'fb-dash-form-element__error') or @role='alert' or contains(@aria-live,'assertive')]")
+            if not msgs:
+                # procurar spans com texto vermelho (heurístico)
+                msgs = scope.find_elements(By.XPATH, "//span[contains(.,'Enter a whole') or contains(.,'decimal number') or contains(.,'larger than') or contains(.,'Digite') or contains(.,'Obrigat') ]")
+            for m in msgs:
+                text = (m.text or "").lower()
+                if not text:
+                    continue
+                self.logger.info(f"🔍 Validation message found: {text[:80]}")
+                if "enter a whole" in text or "whole number" in text or "entre 0 e 99" in text or re.search(r"\bentre\b.*\b0\b.*\b99\b", text):
+                    # procurar campo anterior marcado como inválido (procurar input near this message)
+                    try:
+                        bad_input = m.find_element(By.XPATH, "preceding::input[1] | preceding::textarea[1] | preceding::select[1]")
+                    except Exception:
+                        bad_input = None
+                    if bad_input:
+                        # preencher inteiro '2'
+                        if _field_has_validation_error(self, bad_input, explicit_value="2"):
+                            self.logger.info("🔧 Re-filled numeric after validation hint (2).")
+                            return True
+                if "decimal number larger" in text or "larger than 0.0" in text:
+                    try:
+                        bad_input = m.find_element(By.XPATH, "preceding::input[1] | preceding::textarea[1]")
+                    except Exception:
+                        bad_input = None
+                    if bad_input:
+                        if _field_has_validation_error(self, bad_input, explicit_value="1"):
+                            self.logger.info("🔧 Re-filled decimal after validation hint (1).")
+                            return True
+                # caso geral: se mensagem contém 'Obrigatório' tentar preencher default text
+                if "obrigat" in text or "required" in text:
+                    try:
+                        bad_input = m.find_element(By.XPATH, "preceding::input[1] | preceding::textarea[1] | preceding::select[1]")
+                    except Exception:
+                        bad_input = None
+                    if bad_input:
+                        if _field_has_validation_error(self, bad_input, explicit_value=self.answer_bank.get("default_text", "Tenho interesse nesta oportunidade.")):
+                            self.logger.info("🔧 Preenchimento de campo obrigatório via fallback.")
+                            return True
+        except Exception as e:
+            self.logger.debug(f"parse_validation_and_retry error: {e}")
+        return False
+
+# centralizar: chamar after submit click
+    def handle_save_discard_modal(self, save_on_discard=True, last_click_time=0.0):
+        try:
+            # procurar modal por texto ou atributos
+            discard_modals = self.driver.find_elements(By.XPATH,
+                "//div[contains(normalize-space(.),'Salvar esta candidatura') or contains(normalize-space(.),'Save this application') or contains(@data-test-modal-id,'easy-apply-discard') or contains(@data-test-easy-apply-discard,'true')]"
+            )
+            if not discard_modals:
+                return None
+            modal = discard_modals[0]
+            self.logger.info("ℹ️ Popup 'Salvar esta candidatura?' detectado (handler central).")
+            # localizar botões
+            try:
+                btns = modal.find_elements(By.XPATH, ".//button")
+            except Exception:
+                btns = []
+            btn_save = None
+            btn_discard = None
+            for b in btns:
+                txt = (b.text or "").strip().lower()
+                if 'salvar' in txt or txt == 'save':
+                    btn_save = b
+                if 'descartar' in txt or 'discard' in txt:
+                    btn_discard = b
+            # se apareceu logo após submit -> preferir salvar
+            if last_click_time and (time.time() - last_click_time) < 4.5:
+                if btn_save:
+                    _safe_click(btn_save)
+                    self.logger.info("🔔 Modal pós-submit: cliquei 'Salvar' (preservar aplicação).")
+                    return "saved"
+            # se configuração pede salvar
+            if save_on_discard and btn_save:
+                _safe_click(btn_save)
+                self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> cliquei 'Salvar' (config).")
+                return "saved"
+            # senão descartar (ou fechar)
+            if btn_discard:
+                _safe_click(btn_discard)
+                self.logger.info("ℹ️ Popup 'Salvar esta candidatura' -> cliquei 'Descartar'.")
+                return "discarded"
+            # fallback: clicar fechar (X)
+            try:
+                close_btn = modal.find_element(By.XPATH, ".//button[@aria-label='Fechar' or contains(normalize-space(.),'Fechar') or contains(normalize-space(.),'Close')]")
+                _safe_click(close_btn)
+                return "closed"
+            except Exception:
+                return None
+        except Exception as e:
+            self.logger.debug(f"handle_save_discard_modal error: {e}")
+            return None
+
 
     # -------------------------- Orquestração --------------------------
 
